@@ -114,3 +114,7 @@ Eso implica documentar:
 - orden de validación
 
 Sin ejecutar aún cambios de ruta ni migraciones.
+
+Referencia asociada:
+
+- Runbook de preparación de `n8n`: `runbooks/N8N_MIGRATION_PREP.md`

@@ -108,6 +108,10 @@ Notas:
 - No se debe inferir que una ruta objetivo exista ya solo porque esté definida documentalmente.
 - No hay validación en este documento de backups restaurables por servicio.
 
+Referencia operativa asociada:
+
+- Preparación documental de `n8n`: `runbooks/N8N_MIGRATION_PREP.md`
+
 ## Alcance de este documento
 
 Este documento fija la arquitectura objetivo deseada y su relación con el estado actual confirmado.
