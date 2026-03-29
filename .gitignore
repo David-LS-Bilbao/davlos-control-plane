@@ -1,0 +1,55 @@
+# Secrets y credenciales
+.env
+.env.*
+*.env
+*.secret
+*.secrets
+secrets/
+secret/
+credentials/
+credentials.json
+*.token
+*.tokens
+*.pem
+*.key
+*.p12
+*.pfx
+*.ovpn
+*.crt
+*.csr
+id_rsa
+id_ed25519
+
+# Bases de datos, dumps y copias sensibles
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+*.bak
+*.backup
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+backups/
+dumps/
+
+# Archivos temporales y editor
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python / Node / herramientas
+__pycache__/
+*.pyc
+node_modules/
+
+# Ficheros locales de trabajo
+.local/
+.cache/
