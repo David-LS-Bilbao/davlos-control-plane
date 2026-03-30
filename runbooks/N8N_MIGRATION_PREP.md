@@ -142,6 +142,7 @@ Falta evidencia para fijar en este documento:
 
 ## Referencias
 
+- `docs/N8N_FUNCTIONAL_DEPENDENCIES.md`
 - `runbooks/N8N_POST_MIGRATION_VALIDATION.md`
 - `docs/ARCHITECTURE.md`
 - `docs/LAYOUT_PHASE_2_PROPOSAL.md`

@@ -147,6 +147,7 @@ Falta evidencia en este repositorio para fijar:
 
 ## Referencias
 
+- `docs/N8N_FUNCTIONAL_DEPENDENCIES.md`
 - `runbooks/N8N_MIGRATION_PREP.md`
 - `docs/ARCHITECTURE.md`
 - `docs/LAYOUT_PHASE_2_PROPOSAL.md`
