@@ -1,0 +1,2 @@
+Cmnd_Alias DAVLOS_N8N_AUDIT = /usr/local/sbin/davlos-n8n-audit-readonly docker_readonly, /usr/local/sbin/davlos-n8n-audit-readonly inventory_minimum
+devops ALL=(root) NOPASSWD: DAVLOS_N8N_AUDIT

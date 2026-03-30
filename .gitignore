@@ -63,3 +63,6 @@ evidence/prechecks/**/docker-sock.txt
 evidence/prechecks/**/root-dir.txt
 evidence/prechecks/**/root-*.txt
 evidence/prechecks/**/sudo-l.*.txt
+
+# Runtime checks locales del helper readonly
+evidence/prechecks/**/runtime-check/
