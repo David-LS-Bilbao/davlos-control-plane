@@ -53,3 +53,13 @@ node_modules/
 # Ficheros locales de trabajo
 .local/
 .cache/
+
+# Evidencia cruda de prechecks
+evidence/prechecks/**/*.stdout.txt
+evidence/prechecks/**/*.stderr.txt
+evidence/prechecks/**/id.txt
+evidence/prechecks/**/groups.txt
+evidence/prechecks/**/docker-sock.txt
+evidence/prechecks/**/root-dir.txt
+evidence/prechecks/**/root-*.txt
+evidence/prechecks/**/sudo-l.*.txt
