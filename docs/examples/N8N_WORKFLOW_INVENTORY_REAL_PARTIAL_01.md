@@ -76,20 +76,21 @@ Todo dato no confirmado queda marcado explícitamente como `pendiente de evidenc
 ## Integración principal
 
 - Integración principal:
-  - `pendiente de evidenciar`
+  - `Webhook entrante asociado a propuestas de Clawbot en staging.`
 - Sistema o emisor invocador:
-  - `pendiente de evidenciar`
+  - `Clawbot en entorno staging, vía webhook POST a /clawbot/staging/proposals; componente emisor exacto pendiente de evidenciar.`
 - Tipo de integración:
-  - `webhook entrante, pendiente de evidenciar con mayor precisión`
+  - `webhook entrante`
 - Dirección del flujo:
-  - `entrante, pendiente de evidenciar`
+  - `entrante`
 - Estado de confirmación:
   - `parcial`
 - Observación documental:
-  - el nombre del workflow y el trigger `webhook` sugieren una recepción desde un sistema externo en staging
-  - el sistema o emisor invocador concreto no quedó aportado con un valor confirmable en esta actualización
-  - no existe todavía evidencia suficiente en el repositorio para nombrar con precisión la integración principal sin inferencia adicional
-  - `docs/N8N_FUNCTIONAL_DEPENDENCIES.md` indica que no existe todavía una lista confirmada de integraciones activas por workflow
+  - confirmado por documentación técnica asociada en staging y por el artefacto JSON documentado `clawbot_staging_receiver.workflow.json`
+  - la documentación asociada describe un receptor de propuestas de Clawbot en staging con webhook `POST` en `/clawbot/staging/proposals`
+  - el flujo documentado espera cabeceras `X-Clawbot-Token` y `X-Clawbot-Environment`
+  - no se confirma todavía el componente emisor exacto dentro de Clawbot
+  - el artefacto JSON documentado figura con `active: false`, por lo que no se confirma aún que coincida 1:1 con la instancia activa actual
 
 ## Uso de archivos y `local-files`
 
@@ -107,12 +108,12 @@ Todo dato no confirmado queda marcado explícitamente como `pendiente de evidenc
 - Validación mínima esperada:
   - confirmar que el workflow `clawbot_staging_receiver` existe y puede identificarse sin exponer datos sensibles
   - confirmar su trigger principal `webhook`
-  - confirmar su integración principal
+  - confirmar su integración principal como receptor de propuestas de Clawbot en staging
   - confirmar si usa o no archivos locales
 - Indicador mínimo de avance documental:
-  - la ficha puede pasar de `parcial` a un parcial más sólido cuando identificación, trigger e integración principal queden sustentados con evidencia no sensible
+  - la ficha puede pasar de `parcial` a un parcial más sólido cuando componente emisor exacto, activación real en instancia e identificación técnica estable queden sustentados con evidencia no sensible
 - Resultado funcional esperado:
-  - `pendiente de evidenciar`
+  - recepción de propuesta vía webhook `POST` en `/clawbot/staging/proposals`, pendiente de evidenciar en la instancia activa
 
 ## Evidencias pendientes
 
@@ -120,7 +121,8 @@ Todo dato no confirmado queda marcado explícitamente como `pendiente de evidenc
 - [ ] ID interno no sensible o referencia estable confirmada
 - [x] Trigger principal confirmado
 - [ ] Integración principal confirmada
-- [ ] Sistema o emisor invocador confirmado
+- [ ] Componente emisor exacto confirmado
+- [ ] Activación real en instancia confirmada
 - [ ] Uso de archivos locales confirmado como `sí`, `no` o `pendiente documentado`
 - [ ] Validación funcional mínima específica descrita
 - [ ] Responsable documental identificado
@@ -141,6 +143,7 @@ Todo dato no confirmado queda marcado explícitamente como `pendiente de evidenc
   - existe evidencia real de la instancia `n8n` y de su contexto operativo general
   - el workflow queda identificado nominalmente como `clawbot_staging_receiver`
   - el trigger principal `webhook` queda confirmado
-  - sistema invocador, integración principal exacta, uso de archivos e identificación técnica estable siguen `pendiente de evidenciar`
+  - la integración principal queda mejor delimitada documentalmente como webhook entrante para propuestas de Clawbot en staging
+  - componente emisor exacto, activación real en instancia, uso de archivos e identificación técnica estable siguen `pendiente de evidenciar`
 - Próxima acción documental recomendada:
-  - completar primero el sistema o emisor invocador exacto y confirmar si el workflow usa o no archivos locales, sin exponer datos sensibles
+  - completar primero el componente emisor exacto dentro de Clawbot y confirmar si el artefacto documentado coincide funcionalmente con la instancia activa, sin exponer datos sensibles
