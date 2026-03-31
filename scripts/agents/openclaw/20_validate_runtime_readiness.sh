@@ -64,6 +64,18 @@ is_placeholder_image() {
   return 1
 }
 
+is_placeholder_gateway_token() {
+  local value="${1:-}"
+  local lower="${value,,}"
+
+  [[ -z "${value}" ]] && return 0
+  [[ "${lower}" == *"set_local_gateway_token"* ]] && return 0
+  [[ "${lower}" == *"placeholder"* ]] && return 0
+  [[ "${lower}" == *"pending"* ]] && return 0
+  [[ "${lower}" == *"todo"* ]] && return 0
+  return 1
+}
+
 secrets_dir_state() {
   if [[ ! -d "${SECRETS_DIR}" ]]; then
     echo "missing"
@@ -80,8 +92,9 @@ secrets_dir_state() {
 main() {
   local compose_dir_status config_dir_status state_dir_status logs_dir_status secrets_dir_status
   local compose_file_status env_file_status
-  local runtime_root_key_status gateway_port_key_status image_key_status
-  local image_value image_status config_example_status config_file_status config_file_note
+  local compose_project_key_status runtime_root_key_status gateway_port_key_status image_key_status gateway_token_key_status
+  local image_value image_status gateway_token_value gateway_token_status
+  local config_example_status config_file_status config_file_note
   local missing_count=0
   local incomplete_count=0
 
@@ -94,9 +107,11 @@ main() {
   compose_file_status="$(status_file "${COMPOSE_FILE}")"
   env_file_status="$(status_file "${ENV_FILE}")"
 
+  compose_project_key_status="$(env_key_status "COMPOSE_PROJECT_NAME")"
   runtime_root_key_status="$(env_key_status "OPENCLAW_RUNTIME_ROOT")"
   gateway_port_key_status="$(env_key_status "OPENCLAW_GATEWAY_PORT")"
   image_key_status="$(env_key_status "OPENCLAW_IMAGE")"
+  gateway_token_key_status="$(env_key_status "OPENCLAW_GATEWAY_TOKEN")"
 
   image_value="$(env_key_value "OPENCLAW_IMAGE" || true)"
   if [[ "${image_key_status}" != "present" ]]; then
@@ -105,6 +120,15 @@ main() {
     image_status="placeholder_or_pending"
   else
     image_status="set"
+  fi
+
+  gateway_token_value="$(env_key_value "OPENCLAW_GATEWAY_TOKEN" || true)"
+  if [[ "${gateway_token_key_status}" != "present" ]]; then
+    gateway_token_status="missing_key"
+  elif is_placeholder_gateway_token "${gateway_token_value}"; then
+    gateway_token_status="placeholder_or_pending"
+  else
+    gateway_token_status="set"
   fi
 
   config_example_status="$(status_file "${CONFIG_EXAMPLE_FILE}")"
@@ -127,6 +151,7 @@ main() {
     "${secrets_dir_status}" \
     "${compose_file_status}" \
     "${env_file_status}" \
+    "${compose_project_key_status}" \
     "${runtime_root_key_status}" \
     "${gateway_port_key_status}" \
     "${image_key_status}"
@@ -157,7 +182,7 @@ main() {
       incomplete_count=$((incomplete_count + 1))
     fi
 
-    if [[ "${secrets_dir_status}" != "has_entries" ]]; then
+    if [[ "${gateway_token_status}" != "set" ]] && [[ "${secrets_dir_status}" != "has_entries" ]]; then
       incomplete_count=$((incomplete_count + 1))
     fi
 
@@ -189,10 +214,13 @@ main() {
   echo "config_json_note=${config_file_note}"
   echo
   echo "-- env keys --"
+  echo "COMPOSE_PROJECT_NAME=${compose_project_key_status}"
   echo "OPENCLAW_RUNTIME_ROOT=${runtime_root_key_status}"
   echo "OPENCLAW_GATEWAY_PORT=${gateway_port_key_status}"
   echo "OPENCLAW_IMAGE=${image_key_status}"
   echo "OPENCLAW_IMAGE_STATUS=${image_status}"
+  echo "OPENCLAW_GATEWAY_TOKEN=${gateway_token_key_status}"
+  echo "OPENCLAW_GATEWAY_TOKEN_STATUS=${gateway_token_status}"
   echo
   echo "RUNTIME_STAGE_STATE=${STATE}"
 

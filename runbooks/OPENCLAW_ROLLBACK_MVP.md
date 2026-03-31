@@ -6,7 +6,8 @@ Retirar el despliegue de OpenClaw sin afectar al resto del VPS.
 
 ## pasos
 
-1. Parar el compose de OpenClaw.
+1. Parar el compose de OpenClaw con proyecto aislado:
+   - `sudo docker compose --project-name openclaw --env-file /opt/automation/agents/openclaw/compose/.env -f /opt/automation/agents/openclaw/compose/docker-compose.yaml down`
 2. Confirmar que no quedan contenedores `openclaw` en ejecución.
 3. Mantener `state` y `logs` para análisis.
 4. Retirar `agents_net` solo si no está en uso.
@@ -17,3 +18,4 @@ Retirar el despliegue de OpenClaw sin afectar al resto del VPS.
 - no borrar secretos sin revisión
 - no borrar evidencia o logs de validación
 - no tocar `verity_network`
+- no usar `--remove-orphans` contra otros stacks del VPS

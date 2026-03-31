@@ -4,6 +4,14 @@
 
 Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
 
+## topología real del MVP
+
+- OpenClaw corre en Docker con el servicio `openclaw-gateway`.
+- La red usada es `agents_net`, declarada como red Docker externa.
+- El bind host es `127.0.0.1:18789`.
+- La inferencia sale por `http://172.22.0.1:11440/v1`.
+- El backend real de inferencia es Ollama en host vía `127.0.0.1:11434`, mediado por `inference-gateway`.
+
 ## layout objetivo
 
 - `/opt/automation/agents/openclaw/compose`
@@ -12,24 +20,44 @@ Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
 - `/opt/automation/agents/openclaw/logs`
 - `/etc/davlos/secrets/openclaw`
 
-## pasos
+## imagen fijada para el primer arranque
 
-1. Crear layout objetivo bajo `/opt/automation/agents/openclaw`.
-2. Copiar `templates/openclaw/docker-compose.yaml` y `templates/openclaw/openclaw.env.example`.
-3. Elegir imagen revisada o build local válido de OpenClaw.
-4. Preparar config y token fuera del workspace del agente en `/etc/davlos/secrets/openclaw`.
-5. Crear red `agents_net`.
-6. Levantar `openclaw-gateway` con bind `127.0.0.1:18789`.
-7. Validar:
-   - `docker ps`
-   - `docker logs`
-   - health del contenedor
+- `ghcr.io/openclaw/openclaw:2026.2.3`
+
+## configuración mínima efectiva
+
+- `COMPOSE_PROJECT_NAME=openclaw`
+- `OPENCLAW_GATEWAY_PORT=18789`
+- `OPENCLAW_GATEWAY_TOKEN` generado en el runtime `.env`
+- proveedor local `davlos-local`
+- modelo primario `davlos-local/qwen2.5:3b`
+
+## despliegue
+
+1. Confirmar que `inference-gateway` en host responde en:
+   - `http://127.0.0.1:11440/healthz`
+   - `http://172.22.0.1:11440/v1/models`
+2. Ejecutar el despliegue controlado:
+   - `sudo bash /opt/control-plane/scripts/agents/openclaw/30_first_local_deploy.sh`
+3. Ese script:
+   - asegura layout y permisos del runtime
+   - materializa `openclaw.json`
+   - fija `COMPOSE_PROJECT_NAME=openclaw`
+   - crea o valida `agents_net` en `172.22.0.0/16`
+   - recrea `openclaw-gateway`
+4. Validar:
+   - `sudo docker ps --filter name=openclaw-gateway`
+   - `sudo docker logs --tail 100 openclaw-gateway`
+   - `sudo docker inspect openclaw-gateway`
+   - confirmación de que está en `agents_net`
    - confirmación de que no usa `verity_network`
-   - confirmación de que el gateway no está expuesto en público
+   - comprobación TCP MVP sobre `127.0.0.1:18789`
 
 ## criterio de aceptación
 
 - OpenClaw solo visible por loopback/VPN
-- secretos fuera del agente
 - red separada
+- bind host solo por loopback
+- OpenClaw usando `http://172.22.0.1:11440/v1`
+- sin secretos cloud necesarios para este primer MVP local
 - rollback simple

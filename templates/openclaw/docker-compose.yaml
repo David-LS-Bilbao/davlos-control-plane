@@ -11,6 +11,8 @@ services:
       OPENCLAW_CONFIG_PATH: /workspace/config/openclaw.json
       OPENCLAW_STATE_DIR: /workspace/state
       OPENCLAW_GATEWAY_PORT: "18789"
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN:?set local gateway token before deployment}"
+      INFERENCE_GATEWAY_API_KEY: "${INFERENCE_GATEWAY_API_KEY:-davlos-local}"
     volumes:
       - "${OPENCLAW_RUNTIME_ROOT:-/opt/automation/agents/openclaw}/config:/workspace/config:ro"
       - "${OPENCLAW_RUNTIME_ROOT:-/opt/automation/agents/openclaw}/state:/workspace/state"
@@ -27,7 +29,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "openclaw gateway status --no-probe >/dev/null 2>&1 || openclaw status >/dev/null 2>&1 || exit 1",
+          "node /app/dist/index.js health --token \"$OPENCLAW_GATEWAY_TOKEN\" >/dev/null 2>&1 || exit 1",
         ]
       interval: 30s
       timeout: 10s
@@ -38,4 +40,4 @@ services:
 networks:
   agents_net:
     name: agents_net
-    driver: bridge
+    external: true

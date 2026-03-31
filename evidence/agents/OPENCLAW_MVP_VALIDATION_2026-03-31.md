@@ -2,36 +2,45 @@
 
 ## estado
 
-- scaffold de runtime: preparado y ejecutado en host
-- scripts de staging/validación: preparados
-- artefactos de despliegue: preparados en `templates/openclaw`
-- bootstrap de seguridad: documentado
-- despliegue real en host: pendiente
+- despliegue real ejecutado en host
+- contenedor `openclaw-gateway` arrancado
+- inferencia conectada al `inference-gateway` en host
+- bootstrap de seguridad cerrado para MVP local
+- sin impacto en `n8n`, NPM, WireGuard ni PostgreSQL
 
 ## validación actual
 
-- no existe `openclaw` instalado en host
-- existe runtime staged en host:
+- runtime real materializado en host:
   - `/opt/automation/agents/openclaw/compose`
   - `/opt/automation/agents/openclaw/config`
   - `/opt/automation/agents/openclaw/state`
   - `/opt/automation/agents/openclaw/logs`
   - `/etc/davlos/secrets/openclaw`
-- estado validado del scaffold:
-  - `STAGED_READY_FOR_IMAGE_AND_SECRETS`
-- `openclaw.json.example` forma parte del bootstrap staged
-- `openclaw.json` real sigue pendiente
-- la consola puede mostrar el estado de la zona y el estado previsto de OpenClaw sin tocar producción
+- imagen desplegada:
+  - `ghcr.io/openclaw/openclaw:2026.2.3`
+- proyecto Compose aislado:
+  - `COMPOSE_PROJECT_NAME=openclaw`
+- endpoint de inferencia usado por OpenClaw:
+  - `http://172.22.0.1:11440/v1`
+- modelo efectivo:
+  - `davlos-local/qwen2.5:3b`
+- red:
+  - `agents_net`
+- health/runtime observados en el primer arranque estable:
+  - `status=running`
+  - `restart_count=0`
+  - `health=healthy`
+  - escucha en `ws://0.0.0.0:18789`
+  - comprobación TCP MVP correcta en `127.0.0.1:18789`
+- el directorio `/etc/davlos/secrets/openclaw` puede permanecer vacío en este MVP local
 
 ## deuda técnica explícita
 
-- elegir imagen/build revisado de OpenClaw
-- materializar secretos reales fuera del workspace
-- convertir `openclaw.json.example` en `openclaw.json` validado contra la imagen elegida
-- levantar `agents_net`
-- ejecutar prechecks previos al deploy
-- validar logs/health/runtime real
+- decidir si se mantiene `2026.2.3`, `latest` o un pin por digest
+- endurecer healthcheck si deja de bastar la comprobación TCP MVP
+- definir política final de secretos si se introduce proveedor externo
+- validar funcionalmente el uso real de OpenClaw sobre el gateway ya desplegado
 
 ## siguiente hito técnico
 
-Cerrar el tramo de inferencia/gateway para el primer arranque y dejar el runtime listo para predeploy sin introducir todavía `docker compose up`.
+Ejecutar pruebas funcionales sobre el despliegue ya operativo sin reabrir la base de red ni rediseñar la topología.

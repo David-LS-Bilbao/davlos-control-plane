@@ -17,7 +17,17 @@ No deben vivir en:
 - el workspace del agente
 - el repositorio `control-plane`
 
-## tipos mínimos de secretos previstos
+## estado real del MVP local
+
+En el MVP local actualmente desplegado:
+
+- `/etc/davlos/secrets/openclaw` puede permanecer vacío
+- no hay `provider_api_key`
+- no hay token de proveedor externo
+- el único secreto operativo mínimo es `OPENCLAW_GATEWAY_TOKEN`
+- ese token vive en `/opt/automation/agents/openclaw/compose/.env`, fuera del repo y fuera del workspace del agente
+
+## tipos de secretos que siguen reservados para fases posteriores
 
 ### 1. credencial de backend de inferencia externo
 
@@ -28,9 +38,9 @@ Ejemplos de tipo:
 - API key de proveedor LLM
 - token de acceso a un inference gateway externo
 
-### 2. token o secreto del gateway interno
+### 2. token o secreto adicional del gateway interno
 
-Solo si el siguiente tramo introduce un proxy/gateway interno entre OpenClaw y el backend de inferencia.
+Solo si una fase posterior introduce auth adicional entre OpenClaw y el gateway.
 
 Ejemplos de tipo:
 
@@ -39,7 +49,7 @@ Ejemplos de tipo:
 
 ### 3. secreto de sesión o autenticación del propio runtime
 
-Solo si la imagen/config real de OpenClaw lo exige.
+Solo si la imagen/config real de OpenClaw lo exige más allá del token local actual.
 
 Ejemplos de tipo:
 
@@ -62,9 +72,9 @@ Si el primer arranque usa backend local sin credenciales externas:
 - puede no ser necesario `provider_api_key`
 - la ruta de secretos debe seguir existiendo igualmente
 - el contrato queda listo para crecer sin reestructurar el runtime
+- `OPENCLAW_GATEWAY_TOKEN` puede vivir en el `.env` real del runtime mientras siga siendo un MVP local sin proveedor externo
 
 ## pendiente antes del deploy
 
-- confirmar qué secretos exige la imagen real
-- confirmar si habrá gateway interno en el siguiente tramo
-- decidir qué nombres finales de archivos se usarán en `/run/secrets/openclaw`
+- decidir si el token local del gateway debe migrar a `/etc/davlos/secrets/openclaw`
+- decidir qué nombres finales de archivos se usarán en `/run/secrets/openclaw` si aparecen secretos reales adicionales

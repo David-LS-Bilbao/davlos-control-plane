@@ -2,16 +2,17 @@
 
 ## objetivo
 
-Dejar definido el bootstrap mínimo de seguridad antes del primer arranque real de OpenClaw, sin desplegar todavía nada.
+Dejar fijado el bootstrap mínimo de seguridad que ha permitido el primer arranque real de OpenClaw sin tocar el resto del VPS.
 
 ## diagnóstico corto
 
-El scaffold base ya existe, pero el matiz de seguridad que faltaba era este:
+El MVP quedó cerrado con estas decisiones:
 
-- el runtime tiene rutas, compose y `.env`, pero aún no tiene contrato claro de `openclaw.json`
-- la ruta de secretos existe, pero no está definido qué tipos de secretos vivirán ahí
-- no está cerrada la estrategia de inferencia para el primer arranque
-- no está cerrada la política mínima de red/egress previa al deploy
+- `openclaw.json` mínimo confirmado para la imagen elegida
+- inferencia local a través de `inference-gateway` en host
+- bind host de OpenClaw solo por `127.0.0.1:18789`
+- red dedicada `agents_net`
+- sin credenciales cloud en este primer MVP local
 
 ## decisión recomendada para el primer arranque
 
@@ -34,7 +35,7 @@ Recomendación:
 
 - bind local del gateway en `127.0.0.1:18789`
 - red dedicada `agents_net` para el contenedor
-- acceso futuro y controlado al backend de inferencia que se apruebe
+- acceso controlado al backend de inferencia aprobado en `172.22.0.1:11440`
 - DNS y HTTPS solo cuando se implemente la allowlist real
 
 ### prohibido por defecto
@@ -47,29 +48,24 @@ Recomendación:
 
 ## contrato base de `openclaw.json`
 
-El template de compose apunta a `/workspace/config/openclaw.json`, pero el repo no contiene todavía un esquema confirmado del runtime real.
+El runtime usa `/workspace/config/openclaw.json` con un contrato mínimo suficiente para el MVP:
 
-Por tanto, en este tramo:
-
-- se define un **contrato bootstrap** en `templates/openclaw/openclaw.json.example`
-- ese archivo **no debe tratarse todavía como configuración validada de producción**
-- sirve para fijar:
-  - puerto esperado
-  - rutas de estado/log
-  - estrategia de inferencia
-  - separación entre configuración no sensible y secretos host-side
+- gateway local en `18789`
+- auth por token local de gateway
+- proveedor `davlos-local`
+- endpoint de inferencia `http://172.22.0.1:11440/v1`
+- modelo `qwen2.5:3b`
 
 ## qué debe quedar listo tras este tramo
 
-- contrato bootstrap de `openclaw.json`
-- contrato host-side de secretos
-- política mínima de inferencia
+- contrato mínimo de `openclaw.json`
+- contrato host-side de secretos documentado
+- política mínima de inferencia cerrada
 - política MVP de red/egress documentada
 
-## qué sigue pendiente antes de `docker compose up`
+## qué queda pendiente después del primer arranque
 
-- confirmar sintaxis/config real soportada por la imagen elegida
-- decidir imagen definitiva de OpenClaw
-- materializar secretos reales en `/etc/davlos/secrets/openclaw`
-- decidir el endpoint interno real de inferencia
-- validar predeploy del runtime ya con imagen y secretos
+- decidir si se mantiene la versión fijada o se cambia a pin por digest
+- endurecer el healthcheck si el TCP check deja de bastar
+- introducir secretos host-side solo si aparece un backend externo o auth adicional
+- ejecutar pruebas funcionales sobre el runtime ya desplegado
