@@ -1,0 +1,17 @@
+== n8n precheck: db backend readonly ==
+timestamp=2026-03-31T10:25:40Z
+container=compose-n8n-1
+
+-- db env evidence --
+DB_TYPE=postgresdb
+DB_POSTGRESDB_HOST_PRESENT=yes
+DB_POSTGRESDB_PORT_PRESENT=yes
+DB_POSTGRESDB_DATABASE_PRESENT=yes
+DB_POSTGRESDB_USER_PRESENT=yes
+
+-- sqlite artifact evidence --
+SQLITE_PRESENT=yes
+SQLITE_SIZE_BYTES=585728
+SQLITE_MTIME=2026-03-04 22:34:26.695176990 +0100
+
+RUNTIME_DB_HINT=POSTGRES_SELECTED
