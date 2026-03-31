@@ -10,7 +10,7 @@ Fuente de verdad operativa del VPS DAVLOS.
 - Fase 4 abierta y en pausa operativa.
 - La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
-- Sin cambios de producción ejecutados desde este repositorio.
+- Sin despliegues nuevos activos ejecutados desde este repositorio.
 
 ## Objetivo actual
 
@@ -39,6 +39,29 @@ Hechos confirmados en la documentación operativa actual:
 - `files` usage: `skip`
 - existe evidencia de recuperación operativa y baseline post-recuperación
 
+## Estado de OpenClaw
+
+Checkpoint actual:
+
+- runtime staged en host bajo:
+  - `/opt/automation/agents/openclaw`
+  - `/etc/davlos/secrets/openclaw`
+- estado validado del scaffold:
+  - `STAGED_READY_FOR_IMAGE_AND_SECRETS`
+- scripts base:
+  - `scripts/agents/openclaw/10_stage_runtime.sh`
+  - `scripts/agents/openclaw/20_validate_runtime_readiness.sh`
+- bootstrap documental:
+  - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
+  - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
+  - `templates/openclaw/openclaw.json.example`
+- todavía no existe:
+  - `config/openclaw.json` real
+  - `OPENCLAW_IMAGE` real
+  - `agents_net`
+  - `docker compose up`
+  - contenedor arrancado
+
 ## Documentos clave
 
 - `docs/ARCHITECTURE.md`
@@ -47,9 +70,12 @@ Hechos confirmados en la documentación operativa actual:
 - `runbooks/N8N_BACKUP_AND_ROLLBACK_MINIMUM.md`
 - `runbooks/N8N_MIGRATION_WINDOW_PLAN.md`
 - `runbooks/N8N_POST_MIGRATION_VALIDATION.md`
+- `evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md`
+- `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
+- `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
 
 Nota:
-Algunos runbooks enlazados conservan contexto histórico pre-migración y deben leerse como referencia histórica. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md` y en las evidencias recientes de prechecks.
+Algunos runbooks enlazados conservan contexto histórico pre-migración y deben leerse como referencia histórica. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md` y en las evidencias recientes de prechecks. La verdad actual de OpenClaw en este checkpoint es: staged pero no desplegado.
 
 ## Regla base
 

@@ -1,0 +1,23 @@
+{
+  "contract_type": "bootstrap_example_not_runtime_validated",
+  "runtime": {
+    "state_dir": "/workspace/state",
+    "log_dir": "/workspace/logs"
+  },
+  "gateway": {
+    "listen_host": "0.0.0.0",
+    "listen_port": 18789
+  },
+  "inference": {
+    "mode": "internal_proxy_preferred",
+    "provider": "ollama",
+    "endpoint": "__SET_BEFORE_DEPLOY__",
+    "model": "qwen2.5:3b"
+  },
+  "secrets": {
+    "source": "/run/secrets/openclaw",
+    "provider_api_key_file": "__OPTIONAL_SET_BEFORE_DEPLOY__",
+    "inference_gateway_token_file": "__OPTIONAL_SET_BEFORE_DEPLOY__",
+    "runtime_session_secret_file": "__OPTIONAL_SET_BEFORE_DEPLOY__"
+  }
+}
