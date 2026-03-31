@@ -61,3 +61,26 @@ Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
 - OpenClaw usando `http://172.22.0.1:11440/v1`
 - sin secretos cloud necesarios para este primer MVP local
 - rollback simple
+
+## observabilidad readonly desde consola
+
+Una vez desplegado, la consola MVP puede usarse en modo solo lectura para mostrar el estado combinado de `OpenClaw` e `inference-gateway` sin tocar el runtime.
+
+Comandos útiles:
+
+- `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw`
+- `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-health`
+- `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-logs`
+
+La salida esperada incluye, cuando la sesión tiene acceso suficiente:
+
+- estado y health del contenedor `openclaw-gateway`
+- bind local `127.0.0.1:18789`
+- red `agents_net` e IP del contenedor
+- mounts relevantes
+- `security_opt` y `cap_drop`
+- endpoint de inferencia configurado para OpenClaw
+- estado de `inference-gateway.service`
+- respuesta local de `http://127.0.0.1:11440/healthz`
+
+Si Docker o journal no están disponibles en la sesión actual, la consola degrada con mensaje claro y no rompe otros menús.

@@ -39,3 +39,22 @@ Definir una cuenta de operación limitada para usar la consola sin convertirla e
 - confirmar que la consola funciona con esa cuenta
 - confirmar que no puede salir del perímetro previsto
 - confirmar que `devops` conserva la administración real sin interferencias
+
+## estado actual de la consola MVP
+
+- `DAVLOS VPN Console` ya muestra en modo readonly el estado de `OpenClaw` y de `inference-gateway`
+- la consola no inicia ni detiene contenedores o servicios
+- para `OpenClaw` usa datos externos validados del runtime:
+  - `docker ps`
+  - `docker inspect`
+  - `docker logs`
+- para `inference-gateway` usa:
+  - `systemctl`
+  - `curl` local a `/healthz`
+  - `journalctl` si la sesión tiene permisos para leer journal
+
+## degradación prevista
+
+- si la sesión no tiene acceso a Docker, la consola debe mostrar un mensaje claro y seguir
+- si la sesión no puede leer `journalctl`, la consola debe mantener visible el resumen de `systemctl` y `healthz`
+- este comportamiento es intencional y compatible con un operador restringido

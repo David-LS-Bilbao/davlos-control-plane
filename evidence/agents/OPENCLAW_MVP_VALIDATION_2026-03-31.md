@@ -41,6 +41,21 @@
 - definir política final de secretos si se introduce proveedor externo
 - validar funcionalmente el uso real de OpenClaw sobre el gateway ya desplegado
 
+## observabilidad readonly integrada
+
+- `DAVLOS VPN Console` ya expone una vista readonly para `OpenClaw` e `inference-gateway`
+- comandos operativos mínimos:
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-health`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-logs`
+- el panel muestra:
+  - estado y health del runtime de OpenClaw cuando Docker está disponible en la sesión
+  - bind local, red, container IP, mounts y `security_opt`/`cap_drop`
+  - endpoint de inferencia configurado para OpenClaw
+  - estado y `healthz` de `inference-gateway`
+  - últimos logs útiles de ambos cuando la sesión puede leerlos
+- si la sesión no tiene acceso suficiente a Docker o journal, la consola degrada con mensaje claro y mantiene visible el resumen host-side de `inference-gateway`
+
 ## siguiente hito técnico
 
 Ejecutar pruebas funcionales sobre el despliegue ya operativo sin reabrir la base de red ni rediseñar la topología.
