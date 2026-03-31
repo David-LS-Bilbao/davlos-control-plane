@@ -1,0 +1,135 @@
+== n8n precheck: docker readonly ==
+timestamp=2026-03-31T10:14:30Z
+container=compose-n8n-1
+volume=root_n8n_data
+network=verity_network
+
+-- container summary --
+Name=/compose-n8n-1 Image=docker.n8n.io/n8nio/n8n Status=running RestartPolicy=unless-stopped StartedAt=2026-03-30T17:01:15.027702815Z
+
+-- mounts --
+volume 	 /var/lib/docker/volumes/root_n8n_data/_data 	 /home/node/.n8n
+bind 	 /opt/automation/n8n/local-files 	 /files
+
+
+-- networks --
+verity_network
+
+
+-- port bindings --
+{"5678/tcp":[{"HostIp":"127.0.0.1","HostPort":"5678"}]}
+
+-- env keys only --
+
+DB_POSTGRESDB_DATABASE
+DB_POSTGRESDB_HOST
+DB_POSTGRESDB_PASSWORD
+DB_POSTGRESDB_PORT
+DB_POSTGRESDB_USER
+DB_TYPE
+GENERIC_TIMEZONE
+N8N_DIAGNOSTICS_ENABLED
+N8N_EDITOR_BASE_URL
+N8N_ENCRYPTION_KEY
+N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+N8N_HOST
+N8N_PORT
+N8N_PROTOCOL
+N8N_RELEASE_TYPE
+N8N_SECURE_COOKIE
+N8N_TRUST_PROXY
+NODE_ENV
+NODE_PATH
+NODE_VERSION
+NPM_CONFIG_UPDATE_NOTIFIER
+PATH
+SHELL
+TZ
+WEBHOOK_URL
+
+-- volume inspect --
+[
+    {
+        "CreatedAt": "2026-03-04T21:34:21Z",
+        "Driver": "local",
+        "Labels": {
+            "com.docker.compose.config-hash": "a44b4a0a321379600eb85f91071c0642416f78b019c137e8ec55f4a875ab6bbb",
+            "com.docker.compose.project": "root",
+            "com.docker.compose.version": "5.1.0",
+            "com.docker.compose.volume": "n8n_data"
+        },
+        "Mountpoint": "/var/lib/docker/volumes/root_n8n_data/_data",
+        "Name": "root_n8n_data",
+        "Options": null,
+        "Scope": "local"
+    }
+]
+
+-- network inspect --
+[
+    {
+        "Name": "verity_network",
+        "Id": "353ab16ce4ea0fb773a32dcabc179d4cd32afc786c7d4b81e95827438ff047d0",
+        "Created": "2026-03-05T11:22:27.977799001Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv4": true,
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": {},
+            "Config": [
+                {
+                    "Subnet": "172.19.0.0/16",
+                    "Gateway": "172.19.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Containers": {
+            "076a77d29fa6ec221f7d8084b68d76bf626376017a203d4164b097ec1ae6f89a": {
+                "Name": "verity_npm",
+                "EndpointID": "16539115e7a170b4eebc7fd10723c3a8a4d5e3053f8c87b413cf56f7eee15b77",
+                "MacAddress": "52:b6:80:79:fc:ac",
+                "IPv4Address": "172.19.0.4/16",
+                "IPv6Address": ""
+            },
+            "1dbe672ee1e9e6ffe0b9b1b4f6146ab14bc9663ce6fb82230d9ecf2635e38c5e": {
+                "Name": "verity-postgres-postgres-1",
+                "EndpointID": "20bbbeb5ad92da7f0fd38df6c9e37d2251d9391fabbe00f5a93d24c9f86c5e9b",
+                "MacAddress": "32:0c:47:63:af:2e",
+                "IPv4Address": "172.19.0.3/16",
+                "IPv6Address": ""
+            },
+            "6f6de7ee6b615476dfa50552d08131743502abefd8011895451e4ab51254754e": {
+                "Name": "verity_news_backend",
+                "EndpointID": "d71c27f96cbe8f09d44429b641c1bb425791e548667835f4c31ae49623869ad1",
+                "MacAddress": "da:25:ea:2c:78:71",
+                "IPv4Address": "172.19.0.2/16",
+                "IPv6Address": ""
+            },
+            "705641a0f147e2eae230c89a26e5929f41a20e932aea76be1526e5491f4305fa": {
+                "Name": "compose-n8n-1",
+                "EndpointID": "302a43a5d0335e414afda5bf4c880c4d043bba9ca09d46446bf5e7350b660584",
+                "MacAddress": "d2:5c:8d:5e:85:4b",
+                "IPv4Address": "172.19.0.6/16",
+                "IPv6Address": ""
+            },
+            "f8f46a887c73aeb6d1a05266e9c2d45b7786f9743acd25651c935eca35c10eed": {
+                "Name": "verity_news_frontend",
+                "EndpointID": "60151b4f9409e223e93b5fb4f720ba16a0e56b116b054b913d3c43f8ddf615c9",
+                "MacAddress": "7e:f0:a4:c5:f4:e4",
+                "IPv4Address": "172.19.0.5/16",
+                "IPv6Address": ""
+            }
+        },
+        "Options": {},
+        "Labels": {}
+    }
+]

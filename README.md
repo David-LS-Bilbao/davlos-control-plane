@@ -5,7 +5,10 @@ Fuente de verdad operativa del VPS DAVLOS.
 ## Estado actual
 
 - Fase 1 cerrada.
-- Fase 2 documental y operativa en preparación.
+- Fase 2 cerrada en lo necesario para `n8n`.
+- Fase 3 cerrada histórica y operativamente.
+- Fase 4 abierta y en pausa operativa.
+- La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
 - Sin cambios de producción ejecutados desde este repositorio.
 
@@ -13,24 +16,28 @@ Fuente de verdad operativa del VPS DAVLOS.
 
 Prioridad operativa vigente:
 
-1. cerrar el inventario mínimo útil de `n8n`
-2. preparar y validar prechecks técnicos reales
-3. preparar la futura migración de `n8n` fuera de `/root`
-4. continuar la materialización del layout final del VPS por fases
+1. mantener el estado estable actual de `n8n`
+2. consolidar trazabilidad mínima de Fase 4
+3. revalidar tooling readonly antes de cualquier siguiente cambio
+4. mantener Fase 4 en pausa hasta nueva decisión operativa
 
 ## Estado de n8n
 
 Hechos confirmados en la documentación operativa actual:
 
-- `n8n` sigue dependiendo de:
-  - `/root/docker-compose.yaml`
-  - `/root/n8n.env`
-  - `/root/local-files`
-  - volumen Docker `root_n8n_data`
-  - red Docker `verity_network`
-- `n8n` está en `127.0.0.1:5678` detrás de NPM
-- existe pack de prechecks y runbooks operativos para preparar la futura intervención
-- todavía no debe ejecutarse la migración sin ventana aprobada, backup verificado y rollback listo
+- `n8n` opera desde:
+  - `/opt/automation/n8n/compose/docker-compose.yaml`
+  - `/opt/automation/n8n/env/n8n.env`
+  - `/opt/automation/n8n/local-files`
+- runtime observado: `compose-n8n-1`
+- publicación local válida:
+  - `127.0.0.1:5678`
+  - `127.0.0.1:81`
+- topología válida:
+  - `verity_network`
+  - `root_n8n_data`
+- `files` usage: `skip`
+- existe evidencia de recuperación operativa y baseline post-recuperación
 
 ## Documentos clave
 

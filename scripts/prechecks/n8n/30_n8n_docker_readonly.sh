@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONTAINER_NAME="${1:-root-n8n-1}"
-VOLUME_NAME="${2:-root_n8n_data}"
-NETWORK_NAME="${3:-verity_network}"
+CONTAINER_NAME="${1:-}"
+VOLUME_NAME="${2:-}"
+NETWORK_NAME="${3:-}"
 
 docker_cmd() {
   if docker ps >/dev/null 2>&1; then
@@ -15,6 +15,68 @@ docker_cmd() {
     exit 1
   fi
 }
+
+detect_container_name() {
+  local by_image
+  local by_name
+
+  by_image="$(docker_cmd ps --filter 'ancestor=docker.n8n.io/n8nio/n8n' --format '{{.Names}}' | head -n 1)"
+  if [[ -n "${by_image}" ]]; then
+    printf '%s\n' "${by_image}"
+    return 0
+  fi
+
+  by_name="$(docker_cmd ps --format '{{.Names}}' | grep -E '(^|[-_])n8n($|[-_])|n8n' | head -n 1 || true)"
+  if [[ -n "${by_name}" ]]; then
+    printf '%s\n' "${by_name}"
+    return 0
+  fi
+
+  echo "ERROR: could not detect a running n8n container" >&2
+  echo "Running containers:" >&2
+  docker_cmd ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' >&2
+  exit 1
+}
+
+derive_volume_name() {
+  local container_name="$1"
+  local volume_name
+
+  volume_name="$(docker_cmd inspect "${container_name}" --format '{{range .Mounts}}{{if and (eq .Type "volume") (eq .Destination "/home/node/.n8n")}}{{println .Name}}{{end}}{{end}}' | head -n 1)"
+  if [[ -n "${volume_name}" ]]; then
+    printf '%s\n' "${volume_name}"
+    return 0
+  fi
+
+  volume_name="$(docker_cmd inspect "${container_name}" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}' | head -n 1)"
+  printf '%s\n' "${volume_name}"
+}
+
+derive_network_name() {
+  local container_name="$1"
+  local network_name
+
+  network_name="$(docker_cmd inspect "${container_name}" --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' | grep -x 'verity_network' | head -n 1 || true)"
+  if [[ -n "${network_name}" ]]; then
+    printf '%s\n' "${network_name}"
+    return 0
+  fi
+
+  network_name="$(docker_cmd inspect "${container_name}" --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' | head -n 1)"
+  printf '%s\n' "${network_name}"
+}
+
+if [[ -z "${CONTAINER_NAME}" ]]; then
+  CONTAINER_NAME="$(detect_container_name)"
+fi
+
+if [[ -z "${VOLUME_NAME}" ]]; then
+  VOLUME_NAME="$(derive_volume_name "${CONTAINER_NAME}")"
+fi
+
+if [[ -z "${NETWORK_NAME}" ]]; then
+  NETWORK_NAME="$(derive_network_name "${CONTAINER_NAME}")"
+fi
 
 echo "== n8n precheck: docker readonly =="
 echo "timestamp=$(date -u +%FT%TZ)"

@@ -1,0 +1,36 @@
+== n8n precheck: runtime probe ==
+timestamp=2026-03-31T10:14:27Z
+
+-- local listeners --
+LISTEN 0      4096       127.0.0.1:81         0.0.0.0:*          
+LISTEN 0      4096       127.0.0.1:5678       0.0.0.0:*          
+LISTEN 0      4096         0.0.0.0:443        0.0.0.0:*          
+LISTEN 0      4096         0.0.0.0:80         0.0.0.0:*          
+LISTEN 0      4096            [::]:443           [::]:*          
+LISTEN 0      4096            [::]:80            [::]:*          
+
+-- n8n loopback probe --
+HTTP/1.1 200 OK
+Accept-Ranges: bytes
+Cache-Control: public, max-age=86400
+Last-Modified: Mon, 30 Mar 2026 17:01:28 GMT
+ETag: W/"3b02-19d3fb17a20"
+Content-Type: text/html; charset=utf-8
+Content-Length: 15106
+Vary: Accept-Encoding
+Date: Tue, 31 Mar 2026 10:14:27 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+
+-- npm loopback probe --
+HTTP/1.1 200 OK
+Server: openresty
+Date: Tue, 31 Mar 2026 10:14:27 GMT
+Content-Type: text/html
+Content-Length: 1451
+Last-Modified: Tue, 17 Feb 2026 05:33:26 GMT
+Connection: keep-alive
+ETag: "6993fda6-5ab"
+Accept-Ranges: bytes
+
