@@ -1,5 +1,5 @@
 == n8n precheck: inventory minimum ==
-timestamp=2026-03-31T10:20:43Z
+timestamp=2026-03-31T10:37:39Z
 container=compose-n8n-1
 local_files_path=/opt/automation/n8n/local-files
 

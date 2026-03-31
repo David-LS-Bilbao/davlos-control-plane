@@ -1,5 +1,5 @@
 == n8n precheck: docker readonly ==
-timestamp=2026-03-31T10:14:30Z
+timestamp=2026-03-31T10:37:37Z
 container=compose-n8n-1
 volume=root_n8n_data
 network=verity_network

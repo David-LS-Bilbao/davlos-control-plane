@@ -25,24 +25,56 @@ root_cmd() {
 }
 
 detect_container_name() {
-  local by_image
-  local by_name
+  local preferred_network="verity_network"
+  local id
+  local name
+  local networks
+  local -a candidates=()
+  local -a network_matches=()
+  local -a candidate_descriptions=()
 
-  by_image="$(docker_cmd ps --filter 'ancestor=docker.n8n.io/n8nio/n8n' --format '{{.Names}}' | head -n 1)"
-  if [[ -n "${by_image}" ]]; then
-    printf '%s\n' "${by_image}"
+  mapfile -t candidates < <(docker_cmd ps --filter 'ancestor=docker.n8n.io/n8nio/n8n' --format '{{.ID}}')
+
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    mapfile -t candidates < <(docker_cmd ps --format '{{.ID}} {{.Names}}' | awk '$2 ~ /(^|[-_])n8n($|[-_])|n8n/ {print $1}')
+  fi
+
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    echo "ERROR: could not detect a running n8n container" >&2
+    echo "Running containers:" >&2
+    docker_cmd ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' >&2
+    exit 1
+  fi
+
+  for id in "${candidates[@]}"; do
+    name="$(docker_cmd inspect "${id}" --format '{{.Name}}')"
+    name="${name#/}"
+    networks="$(docker_cmd inspect "${id}" --format '{{range $k, $v := .NetworkSettings.Networks}}{{printf "%s " $k}}{{end}}')"
+    candidate_descriptions+=("${name} [${networks:-no-networks}]")
+    case " ${networks} " in
+      *" ${preferred_network} "*) network_matches+=("${name}") ;;
+    esac
+  done
+
+  if [[ "${#network_matches[@]}" -eq 1 ]]; then
+    printf '%s\n' "${network_matches[0]}"
     return 0
   fi
 
-  by_name="$(docker_cmd ps --format '{{.Names}}' | grep -E '(^|[-_])n8n($|[-_])|n8n' | head -n 1 || true)"
-  if [[ -n "${by_name}" ]]; then
-    printf '%s\n' "${by_name}"
+  if [[ "${#network_matches[@]}" -gt 1 ]]; then
+    echo "ERROR: multiple n8n candidates found on ${preferred_network}" >&2
+    printf 'Candidates: %s\n' "${network_matches[@]}" >&2
+    exit 1
+  fi
+
+  if [[ "${#candidates[@]}" -eq 1 ]]; then
+    echo "WARN: using sole n8n candidate outside ${preferred_network}" >&2
+    printf '%s\n' "${candidate_descriptions[0]%% \[*}"
     return 0
   fi
 
-  echo "ERROR: could not detect a running n8n container" >&2
-  echo "Running containers:" >&2
-  docker_cmd ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' >&2
+  echo "ERROR: multiple n8n candidates found and none matched ${preferred_network}" >&2
+  printf 'Candidates: %s\n' "${candidate_descriptions[@]}" >&2
   exit 1
 }
 

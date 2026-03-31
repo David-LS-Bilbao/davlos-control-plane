@@ -48,6 +48,9 @@ Hechos confirmados en la documentación operativa actual:
 - `runbooks/N8N_MIGRATION_WINDOW_PLAN.md`
 - `runbooks/N8N_POST_MIGRATION_VALIDATION.md`
 
+Nota:
+Algunos runbooks enlazados conservan contexto histórico pre-migración y deben leerse como referencia histórica. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md` y en las evidencias recientes de prechecks.
+
 ## Regla base
 
 Este repositorio documenta y prepara cambios.
