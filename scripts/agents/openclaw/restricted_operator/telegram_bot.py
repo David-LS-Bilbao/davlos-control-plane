@@ -41,6 +41,13 @@ class PendingConfirmation:
     reason: str
 
 
+@dataclass
+class AssistantSession:
+    operator_id: str
+    awakened_at: float
+    last_activity_at: float
+
+
 class TelegramHttpClient:
     def __init__(self, *, api_base_url: str, token: str):
         self.api_base_url = api_base_url.rstrip("/")
@@ -139,6 +146,11 @@ class TelegramCommandProcessor:
             token=token,
         )
         self.pending_confirmations: dict[str, PendingConfirmation] = {}
+        self.assistant_sessions: dict[str, AssistantSession] = {}
+        self.assistant_idle_timeout_seconds = max(
+            60,
+            int(os.environ.get("OPENCLAW_TELEGRAM_ASSISTANT_IDLE_TIMEOUT_SECONDS", "300")),
+        )
 
     def process_update(self, update: dict[str, Any]) -> int | None:
         if isinstance(update.get("edited_message"), dict):
@@ -252,6 +264,15 @@ class TelegramCommandProcessor:
                 result={"kind": "help"},
             )
             return self._render_help(operator_id)
+        if command == "/wake":
+            return self._wake_assistant(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if command == "/sleep":
+            return self._sleep_assistant(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                reason="manual",
+            )
 
         if command == "/status":
             return self._handle_status(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
@@ -279,9 +300,20 @@ class TelegramCommandProcessor:
         return "Comando no soportado. Usa /help."
 
     def _handle_conversation(self, *, chat_id: str, user_id: str, operator_id: str, text: str) -> str:
+        normalized = self._normalize_text(text)
+        if normalized in {"wake", "despierta", "despierta openclaw", "modo asistente"}:
+            return self._wake_assistant(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if normalized in {"sleep", "duerme", "duermete", "sal del modo asistente"}:
+            return self._sleep_assistant(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                reason="manual",
+            )
+
+        session = self._get_active_session(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
         pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
         pending = self.pending_confirmations.get(pending_key)
-        normalized = self._normalize_text(text)
         if pending is not None and self._is_confirmation_accept(normalized):
             self.pending_confirmations.pop(pending_key, None)
             self._audit_channel_event(
@@ -294,11 +326,19 @@ class TelegramCommandProcessor:
                 action_id=pending.action_id,
                 params={"intent": pending.intent, "summary": pending.summary},
             )
-            return self._execute_pending_confirmation(
+            return self._response(
                 chat_id=chat_id,
                 user_id=user_id,
                 operator_id=operator_id,
-                pending=pending,
+                action_id=pending.action_id,
+                text=self._execute_pending_confirmation(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    pending=pending,
+                ),
+                mode="assistant" if session is not None else "conversation",
+                intent=pending.intent,
             )
         if pending is not None and self._is_confirmation_reject(normalized):
             self.pending_confirmations.pop(pending_key, None)
@@ -312,15 +352,31 @@ class TelegramCommandProcessor:
                 action_id=pending.action_id,
                 params={"intent": pending.intent, "summary": pending.summary},
             )
-            return "Acción cancelada. No se aplicó ningún cambio."
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id=pending.action_id,
+                text="Acción cancelada. No se aplicó ningún cambio.",
+                mode="assistant" if session is not None else "conversation",
+                intent=pending.intent,
+            )
         if pending is not None:
-            return (
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id=pending.action_id,
+                mode="assistant" if session is not None else "conversation",
+                intent="pending_confirmation",
+                text=(
                 "Hay una acción pendiente de confirmación.\n"
                 f"{pending.summary}\n"
                 "Responde 'si' para ejecutar o 'no' para cancelar."
             )
+            )
 
-        intent = self._detect_conversational_intent(text)
+        intent = self._detect_conversational_intent(text, assistant_awake=session is not None)
         if intent is None:
             self._audit_channel_event(
                 event="intent_rejected_unsupported",
@@ -332,11 +388,23 @@ class TelegramCommandProcessor:
                 error="unsupported or ambiguous conversational intent",
                 params={"text_preview": text[:120]},
             )
-            return self._render_conversation_help()
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id="telegram.command",
+                mode="assistant" if session is not None else "conversation",
+                intent="unsupported",
+                text=(
+                    self._render_assistant_fallback()
+                    if session is not None
+                    else self._render_conversation_help()
+                ),
+            )
 
         self._audit_channel_event(
             event="intent_detected",
-            command="conversation",
+            command="assistant" if session is not None else "conversation",
             chat_id=chat_id,
             user_id=user_id,
             operator_id=operator_id,
@@ -345,11 +413,73 @@ class TelegramCommandProcessor:
             params={"intent": intent["intent"], "text_preview": text[:120]},
         )
         if intent["intent"] == "status":
+            if session is not None:
+                return self._response(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    action_id="telegram.command",
+                    mode="assistant",
+                    intent="status",
+                    text=self._render_assistant_status(chat_id=chat_id, user_id=user_id, operator_id=operator_id),
+                )
             return self._handle_status(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
         if intent["intent"] == "capabilities":
+            if session is not None:
+                return self._response(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    action_id="telegram.command",
+                    mode="assistant",
+                    intent="capabilities",
+                    text=self._render_assistant_capabilities(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        operator_id=operator_id,
+                    ),
+                )
             return self._handle_capabilities(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
         if intent["intent"] == "audit_tail":
+            if session is not None:
+                return self._response(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    action_id="telegram.command",
+                    mode="assistant",
+                    intent="audit_tail",
+                    text=self._render_assistant_audit_tail(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        operator_id=operator_id,
+                    ),
+                )
             return self._handle_audit_tail(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if intent["intent"] == "explain_status":
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id="telegram.command",
+                mode="assistant",
+                intent="explain_status",
+                text=self._render_assistant_explanation(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                ),
+            )
+        if intent["intent"] == "suggest_action":
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id="telegram.command",
+                mode="assistant",
+                intent="suggest_action",
+                text=self._render_assistant_suggestion(operator_id=operator_id),
+            )
         if intent["intent"] == "logs_read":
             return self._execute_conversation_broker_action(
                 chat_id=chat_id,
@@ -357,6 +487,32 @@ class TelegramCommandProcessor:
                 operator_id=operator_id,
                 action_id="action.logs.read.v1",
                 params=intent["params"],
+            )
+
+        mutation_permission_error = self._check_mutation_permission(
+            operator_id=operator_id,
+            action_id=intent["action_id"],
+        )
+        if mutation_permission_error is not None:
+            self._audit_channel_event(
+                event="intent_rejected_unauthorized",
+                command="assistant" if session is not None else "conversation",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                action_id=intent["action_id"],
+                error=mutation_permission_error,
+                params={"intent": intent["intent"]},
+            )
+            return self._response(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id=intent["action_id"],
+                mode="assistant" if session is not None else "conversation",
+                intent=intent["intent"],
+                text=f"No puedo proponer esa acción: {mutation_permission_error}",
             )
 
         pending = PendingConfirmation(
@@ -371,7 +527,7 @@ class TelegramCommandProcessor:
         self.pending_confirmations[pending_key] = pending
         self._audit_channel_event(
             event="confirmation_requested",
-            command="conversation",
+            command="assistant" if session is not None else "conversation",
             chat_id=chat_id,
             user_id=user_id,
             operator_id=operator_id,
@@ -379,10 +535,18 @@ class TelegramCommandProcessor:
             action_id=pending.action_id,
             params={"intent": pending.intent, "summary": pending.summary},
         )
-        return (
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id=pending.action_id,
+            mode="assistant" if session is not None else "conversation",
+            intent=pending.intent,
+            text=(
             "Acción interpretada:\n"
             f"{pending.summary}\n"
             "Responde 'si' para ejecutar o 'no' para cancelar."
+        )
         )
 
     def _execute_conversation_broker_action(
@@ -422,7 +586,15 @@ class TelegramCommandProcessor:
             action_id=action_id,
             params=self._safe_params_for_audit(params),
         )
-        return self._render_execution_result(result)
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id=action_id,
+            mode="assistant" if self._has_active_session(chat_id=chat_id, user_id=user_id, operator_id=operator_id) else "conversation",
+            intent="logs_read",
+            text=self._render_execution_result(result),
+        )
 
     def _execute_pending_confirmation(
         self,
@@ -673,8 +845,16 @@ class TelegramCommandProcessor:
             return False
 
     @staticmethod
+    def _session_key(*, chat_id: str, user_id: str) -> str:
+        return f"{chat_id}:{user_id}"
+
+    @staticmethod
     def _pending_key(*, chat_id: str, user_id: str) -> str:
         return f"{chat_id}:{user_id}"
+
+    @staticmethod
+    def _now_monotonic() -> float:
+        return time.monotonic()
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -690,9 +870,17 @@ class TelegramCommandProcessor:
     def _is_confirmation_reject(normalized: str) -> bool:
         return normalized in {"no", "cancelar", "cancela", "rechazar"}
 
-    def _detect_conversational_intent(self, text: str) -> dict[str, Any] | None:
+    def _detect_conversational_intent(self, text: str, *, assistant_awake: bool) -> dict[str, Any] | None:
         normalized = self._normalize_text(text)
         if normalized in {"estado", "estado general", "como va", "como va openclaw", "salud general"}:
+            return {"intent": "status", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and normalized in {
+            "como estamos",
+            "que tal estamos",
+            "estado del sistema",
+            "como esta todo",
+            "dame un resumen del estado",
+        }:
             return {"intent": "status", "action_id": "telegram.command", "params": {}}
         if normalized in {
             "capacidades",
@@ -702,8 +890,37 @@ class TelegramCommandProcessor:
             "capabilities",
         }:
             return {"intent": "capabilities", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and normalized in {
+            "que puedes hacer",
+            "que tienes activo",
+            "que esta habilitado",
+            "que capacidades puedo usar",
+        }:
+            return {"intent": "capabilities", "action_id": "telegram.command", "params": {}}
         if normalized in {"auditoria", "auditoria reciente", "audit", "audit tail", "ultimos eventos"}:
             return {"intent": "audit_tail", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and normalized in {
+            "que ha pasado",
+            "que paso recientemente",
+            "ultimos cambios",
+            "que hiciste",
+        }:
+            return {"intent": "audit_tail", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and normalized in {
+            "explica el estado",
+            "explicame el estado",
+            "resume el estado",
+            "por que esta asi",
+        }:
+            return {"intent": "explain_status", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and normalized in {
+            "que propones",
+            "que recomiendas",
+            "propon una accion",
+            "propon acciones",
+            "que harias",
+        }:
+            return {"intent": "suggest_action", "action_id": "telegram.command", "params": {}}
 
         logs_intent = self._match_logs_intent(normalized)
         if logs_intent is not None:
@@ -965,18 +1182,266 @@ class TelegramCommandProcessor:
             "- habilita action.dropzone.write.v1\n"
             "- deshabilita action.dropzone.write.v1\n"
             "- habilita action.dropzone.write.v1 por 15 minutos\n"
-            "- resetea one-shot action.webhook.trigger.v1"
+            "- resetea one-shot action.webhook.trigger.v1\n"
+            "Si quieres hablar de forma más natural, usa /wake."
         )
 
     @staticmethod
     def _render_help(operator_id: str) -> str:
         return (
             f"operator={operator_id}\n"
+            "/wake\n"
+            "/sleep\n"
             "/status\n"
             "/capabilities\n"
             "/audit_tail\n"
             "/execute <action_id> [k=v ...]\n"
             "Conversacional: estado general | capacidades activas | auditoría reciente | logs openclaw 20"
+        )
+
+    def _wake_assistant(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        key = self._session_key(chat_id=chat_id, user_id=user_id)
+        now = self._now_monotonic()
+        self.assistant_sessions[key] = AssistantSession(
+            operator_id=operator_id,
+            awakened_at=now,
+            last_activity_at=now,
+        )
+        self._audit_channel_event(
+            event="assistant_wake",
+            command="/wake",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            params={"timeout_seconds": self.assistant_idle_timeout_seconds},
+        )
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id="telegram.command",
+            mode="assistant",
+            intent="assistant_wake",
+            text=(
+                "Asistente despierto.\n"
+                f"Timeout por inactividad: {self.assistant_idle_timeout_seconds}s.\n"
+                "Puedes pedirme estado general, capacidades activas, auditoría reciente, logs permitidos,\n"
+                "explicación del estado o propuestas de acción. Para salir: /sleep."
+            ),
+        )
+
+    def _sleep_assistant(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        reason: str,
+    ) -> str:
+        key = self._session_key(chat_id=chat_id, user_id=user_id)
+        existed = self.assistant_sessions.pop(key, None)
+        self.pending_confirmations.pop(self._pending_key(chat_id=chat_id, user_id=user_id), None)
+        if existed is not None:
+            self._audit_channel_event(
+                event="assistant_sleep",
+                command="/sleep",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=True,
+                params={"reason": reason},
+            )
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id="telegram.command",
+            mode="assistant",
+            intent="assistant_sleep",
+            text=(
+                "Asistente dormido. Mantengo disponibles los slash commands habituales."
+                if existed is not None
+                else "El asistente ya estaba dormido. Los slash commands siguen disponibles."
+            ),
+        )
+
+    def _get_active_session(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+    ) -> AssistantSession | None:
+        key = self._session_key(chat_id=chat_id, user_id=user_id)
+        session = self.assistant_sessions.get(key)
+        if session is None:
+            return None
+        if session.operator_id != operator_id:
+            self.assistant_sessions.pop(key, None)
+            self.pending_confirmations.pop(self._pending_key(chat_id=chat_id, user_id=user_id), None)
+            return None
+        now = self._now_monotonic()
+        if now - session.last_activity_at > self.assistant_idle_timeout_seconds:
+            self.assistant_sessions.pop(key, None)
+            self.pending_confirmations.pop(self._pending_key(chat_id=chat_id, user_id=user_id), None)
+            self._audit_channel_event(
+                event="assistant_sleep",
+                command="assistant",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=True,
+                params={"reason": "timeout", "timeout_seconds": self.assistant_idle_timeout_seconds},
+            )
+            return None
+        session.last_activity_at = now
+        return session
+
+    def _has_active_session(self, *, chat_id: str, user_id: str, operator_id: str) -> bool:
+        key = self._session_key(chat_id=chat_id, user_id=user_id)
+        session = self.assistant_sessions.get(key)
+        return session is not None and session.operator_id == operator_id
+
+    def _check_mutation_permission(self, *, operator_id: str, action_id: str) -> str | None:
+        try:
+            self.policy.authorize_operator_for_action_mutation(operator_id, action_id)
+            return None
+        except PolicyError as exc:
+            return str(exc)
+
+    def _response(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        action_id: str,
+        text: str,
+        mode: str,
+        intent: str,
+    ) -> str:
+        self._audit_channel_event(
+            event="response_generated",
+            command=mode,
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id=action_id,
+            params={"mode": mode, "intent": intent},
+            result={"text_preview": text[:200]},
+        )
+        return text
+
+    def _render_assistant_status(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="policy.read",
+            command="assistant",
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        if operator is None:
+            return "No puedo resumir el estado porque este operador no tiene permiso de lectura."
+        states = self.policy.list_effective_action_states()
+        summary = {"enabled": 0, "disabled": 0, "expired": 0, "consumed": 0}
+        for state in states:
+            summary[state.status] = summary.get(state.status, 0) + 1
+        return (
+            "Estado general de OpenClaw:\n"
+            f"- operador activo: {operator.operator_id}\n"
+            f"- capacidades totales: {len(states)}\n"
+            f"- activas: {summary.get('enabled', 0)}\n"
+            f"- deshabilitadas: {summary.get('disabled', 0)}\n"
+            f"- expiradas: {summary.get('expired', 0)}\n"
+            f"- one-shot consumidas: {summary.get('consumed', 0)}"
+        )
+
+    def _render_assistant_capabilities(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="policy.read",
+            command="assistant",
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        if operator is None:
+            return "No puedo listar capacidades porque este operador no tiene permiso de lectura."
+        rows = []
+        for state in self.policy.list_effective_action_states():
+            can_execute = self._can_operator(operator_id, state.permission)
+            rows.append(
+                f"- {state.action_id}: status={state.status}, mode={state.mode}, exec={'yes' if can_execute else 'no'}"
+            )
+        return self._limit_message(
+            "Capacidades activas y visibles para este operador:\n" + ("\n".join(rows) if rows else "- no hay acciones configuradas")
+        )
+
+    def _render_assistant_audit_tail(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        body = self._handle_audit_tail(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if body == "Operador no autorizado para consultar auditoría.":
+            return body
+        return "Últimos eventos de auditoría que puedo mostrarte:\n" + body
+
+    def _render_assistant_explanation(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="policy.read",
+            command="assistant",
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        if operator is None:
+            return "No puedo explicar el estado porque este operador no tiene permiso de lectura."
+        states = self.policy.list_effective_action_states()
+        disabled = [state.action_id for state in states if state.status == "disabled"]
+        consumed = [state.action_id for state in states if state.status == "consumed"]
+        expired = [state.action_id for state in states if state.status == "expired"]
+        lines = ["Lectura rápida del estado actual:"]
+        if not disabled and not consumed and not expired:
+            lines.append("- No veo bloqueos inmediatos en policy.")
+        if disabled:
+            lines.append(f"- Hay capacidades deshabilitadas: {', '.join(disabled[:3])}")
+        if expired:
+            lines.append(f"- Hay capacidades expiradas: {', '.join(expired[:3])}")
+        if consumed:
+            lines.append(f"- Hay one-shot consumidas: {', '.join(consumed[:3])}")
+        lines.append(f"- Operador en sesión: {operator.operator_id}.")
+        lines.append("- Si quieres, puedo proponerte una acción segura dentro de permisos.")
+        return self._limit_message("\n".join(lines))
+
+    def _render_assistant_suggestion(self, *, operator_id: str) -> str:
+        states = self.policy.list_effective_action_states()
+        for state in states:
+            if state.status == "consumed":
+                return (
+                    "Propuesta: revisar si conviene resetear el one-shot consumido.\n"
+                    f"Ejemplo: resetea one-shot {state.action_id}"
+                )
+            if state.status in {"disabled", "expired"}:
+                return (
+                    "Propuesta: revisar si conviene habilitar temporalmente una capacidad hoy no disponible.\n"
+                    f"Ejemplo: habilita {state.action_id} por 15 minutos"
+                )
+        return (
+            f"No veo una mutación urgente para {operator_id}. "
+            "La policy parece estable; puedes pedirme estado, capacidades, auditoría o logs."
+        )
+
+    @staticmethod
+    def _render_assistant_fallback() -> str:
+        return (
+            "No puedo interpretar esa frase de forma segura.\n"
+            "Puedo ayudarte con:\n"
+            "- estado general\n"
+            "- capacidades activas\n"
+            "- auditoría reciente\n"
+            "- logs openclaw 20\n"
+            "- explica el estado\n"
+            "- qué propones\n"
+            "- habilita/deshabilita una capacidad concreta\n"
+            "Para salir del modo asistente usa /sleep."
         )
 
 

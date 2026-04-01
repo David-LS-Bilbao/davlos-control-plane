@@ -425,6 +425,39 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("action.health.general.v1", reply)
         self.assertIn("exec=yes", reply)
 
+    def test_telegram_wake_starts_assistant_session(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        self.assertIn("Asistente despierto.", reply)
+        self.assertTrue(self.telegram._has_active_session(chat_id="1001", user_id="42", operator_id="authorized-operator"))
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("assistant_wake", audit_events)
+
+    def test_telegram_sleep_ends_assistant_session(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="/sleep")
+        self.assertIn("Asistente dormido.", reply)
+        self.assertFalse(self.telegram._has_active_session(chat_id="1001", user_id="42", operator_id="authorized-operator"))
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("assistant_sleep", audit_events)
+
+    def test_telegram_wake_timeout_expires_session(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        session_key = self.telegram._session_key(chat_id="1001", user_id="42")
+        self.telegram.assistant_idle_timeout_seconds = 60
+        self.telegram.assistant_sessions[session_key].last_activity_at -= 120
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
+        self.assertIn("No entendí la intención", reply)
+        self.assertFalse(self.telegram._has_active_session(chat_id="1001", user_id="42", operator_id="authorized-operator"))
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("assistant_sleep", audit_events)
+
+    def test_telegram_awake_mode_accepts_natural_status_query(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="como estamos")
+        self.assertIn("Estado general de OpenClaw:", reply)
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("response_generated", audit_events)
+
     def test_telegram_conversational_mutation_requires_confirmation(self) -> None:
         reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
         self.assertIn("Acción interpretada:", reply)
@@ -446,6 +479,26 @@ class BrokerTests(unittest.TestCase):
         audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
         self.assertIn("confirmation_accepted", audit_events)
         self.assertIn("action_executed", audit_events)
+
+    def test_telegram_awake_mutation_still_requires_confirmation(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
+        self.assertIn("Acción interpretada:", reply)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+
+    def test_telegram_awake_mutation_rejected_for_operator_without_permissions(self) -> None:
+        self.telegram.handle_text(chat_id="2002", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="2002", user_id="42", text="deshabilita action.dropzone.write.v1")
+        self.assertIn("No puedo proponer esa acción", reply)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("intent_rejected_unauthorized", audit_events)
 
     def test_telegram_conversational_rejects_unsupported_intent(self) -> None:
         reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
