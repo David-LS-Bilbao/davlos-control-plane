@@ -28,6 +28,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     "admin": [
         "policy.read",
         "policy.mutate",
+        "operator.audit",
         "operator.read",
         "operator.trigger",
         "operator.write",

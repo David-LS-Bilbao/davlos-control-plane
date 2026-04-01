@@ -35,6 +35,10 @@ La configuración Telegram vive en el bloque `telegram` de la policy:
 - `poll_timeout_seconds`
 - `audit_tail_lines`
 - `offset_store_path`
+- `runtime_status_path`
+- `rate_limit_window_seconds`
+- `rate_limit_max_requests`
+- `max_command_length`
 - `allowed_chats`
 - `allowed_users`
 
@@ -68,8 +72,15 @@ Reglas:
 
 - chat o user deben estar allowlisted
 - el `operator_id` resuelto debe existir y estar habilitado
-- para `/status`, `/capabilities` y `/audit_tail` se exige `policy.read`
+- para `/status` y `/capabilities` se exige `policy.read`
+- para `/audit_tail` se exige `operator.audit`
 - para `/execute` se exige el permiso específico declarado por la acción
+
+Separación actual:
+
+- `operator` puede consultar estado/capacidades y ejecutar acciones no sensibles según `permission`
+- `admin` conserva permisos sensibles como `operator.control`
+- `/audit_tail` por Telegram queda reservado a `admin` mediante `operator.audit`
 
 ## auditoría
 
@@ -81,6 +92,7 @@ El canal Telegram deja eventos útiles en el audit log del broker:
 - `telegram_command_rejected_invalid_params`
 - `telegram_command_rejected_unknown_action`
 - `telegram_action_requested`
+- `telegram_command_rejected_rate_limited`
 
 Campos relevantes:
 
@@ -109,3 +121,8 @@ python3 /opt/control-plane/scripts/agents/openclaw/restricted_operator/telegram_
 - sin autenticación remota fuerte
 - sin menús conversacionales complejos
 - polling simple, no webhook público
+- rate limiting simple en memoria
+
+Para despliegue y operación runtime ver:
+
+- `docs/TELEGRAM_OPENCLAW_RUNTIME_MVP.md`

@@ -76,6 +76,7 @@
       "admin": [
         "policy.read",
         "policy.mutate",
+        "operator.audit",
         "operator.read",
         "operator.trigger",
         "operator.write",
@@ -110,6 +111,10 @@
     "poll_timeout_seconds": 20,
     "audit_tail_lines": 10,
     "offset_store_path": "/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+    "runtime_status_path": "/opt/automation/agents/openclaw/broker/state/telegram_runtime_status.json",
+    "rate_limit_window_seconds": 30,
+    "rate_limit_max_requests": 6,
+    "max_command_length": 512,
     "allowed_chats": {
       "123456789": {
         "operator_id": "davlos-operator",

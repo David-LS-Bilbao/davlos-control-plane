@@ -86,7 +86,7 @@ class BrokerTests(unittest.TestCase):
                         "roles": {
                             "viewer": ["policy.read", "operator.read"],
                             "operator": ["policy.read", "policy.mutate", "operator.read", "operator.trigger", "operator.write"],
-                            "admin": ["policy.read", "policy.mutate", "operator.read", "operator.trigger", "operator.write", "operator.control"],
+                            "admin": ["policy.read", "policy.mutate", "operator.audit", "operator.read", "operator.trigger", "operator.write", "operator.control"],
                         },
                         "operators": {
                             "authorized-operator": {
@@ -100,6 +100,12 @@ class BrokerTests(unittest.TestCase):
                                 "enabled": True,
                                 "display_name": "Readonly Viewer",
                                 "reason": "test_viewer",
+                            },
+                            "admin-operator": {
+                                "role": "admin",
+                                "enabled": True,
+                                "display_name": "Admin Operator",
+                                "reason": "test_admin",
                             },
                         },
                     },
@@ -378,14 +384,6 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(effective.status, "disabled")
 
     def test_admin_can_enable_control_action(self) -> None:
-        payload = json.loads(self.policy_path.read_text())
-        payload["operator_auth"]["operators"]["admin-operator"] = {
-            "role": "admin",
-            "enabled": True,
-            "display_name": "Admin Operator",
-            "reason": "test_admin",
-        }
-        self.policy_path.write_text(json.dumps(payload))
         rc = broker_cli.set_enabled(
             str(self.policy_path),
             "action.openclaw.restart.v1",
@@ -425,6 +423,33 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(reply, "Operador no autorizado para action.dropzone.write.v1.")
         audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
         self.assertIn("telegram_command_rejected_operator_not_authorized", audit_events)
+
+    def test_telegram_audit_tail_requires_admin(self) -> None:
+        viewer_reply = self.telegram.handle_text(chat_id="2002", user_id="42", text="/audit_tail")
+        self.assertEqual(viewer_reply, "Operador no autorizado para consultar auditoría.")
+        payload = json.loads(self.policy_path.read_text())
+        payload["telegram"]["allowed_chats"]["3003"] = {
+            "operator_id": "admin-operator",
+            "enabled": True,
+            "display_name": "Admin Chat",
+            "reason": "test_admin_chat",
+        }
+        self.policy_path.write_text(json.dumps(payload))
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client)
+        admin_reply = telegram.handle_text(chat_id="3003", user_id="7", text="/audit_tail")
+        self.assertTrue("No hay eventos" in admin_reply or "telegram_command" in admin_reply or "action=" in admin_reply)
+
+    def test_telegram_rate_limit_rejects_burst(self) -> None:
+        self.telegram.rate_limiter.max_requests = 2
+        update1 = {"update_id": 1, "message": {"chat": {"id": 1001}, "from": {"id": 42}, "text": "/status"}}
+        update2 = {"update_id": 2, "message": {"chat": {"id": 1001}, "from": {"id": 42}, "text": "/status"}}
+        update3 = {"update_id": 3, "message": {"chat": {"id": 1001}, "from": {"id": 42}, "text": "/status"}}
+        self.telegram.process_update(update1)
+        self.telegram.process_update(update2)
+        self.telegram.process_update(update3)
+        self.assertEqual(self.telegram_client.sent_messages[-1][1], "Rate limit activo. Espera unos segundos y reintenta.")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("telegram_command_rejected_rate_limited", audit_events)
 
     def test_telegram_edited_message_does_not_reexecute_action(self) -> None:
         update = {

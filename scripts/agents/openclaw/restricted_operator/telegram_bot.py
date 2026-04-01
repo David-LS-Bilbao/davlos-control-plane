@@ -140,7 +140,7 @@ class TelegramCommandProcessor:
             return int(update_id) if isinstance(update_id, int) else None
         chat_id = str(chat.get("id", ""))
         user_id = str(user.get("id", ""))
-        principal_key = f"chat:{chat_id}"
+        principal_key = f"user:{user_id}" if user_id else f"chat:{chat_id}"
         try:
             self.rate_limiter.check(principal_key)
         except RateLimitExceededError as exc:
@@ -301,7 +301,7 @@ class TelegramCommandProcessor:
     def _handle_audit_tail(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
         operator = self._authorize_operator(
             operator_id=operator_id,
-            permission="policy.read",
+            permission="operator.audit",
             command="/audit_tail",
             chat_id=chat_id,
             user_id=user_id,
