@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +20,10 @@ from policy import PolicyError, PolicyStore
 
 
 class TelegramApiError(RuntimeError):
+    pass
+
+
+class RateLimitExceededError(RuntimeError):
     pass
 
 
@@ -72,12 +80,45 @@ class TelegramOffsetStore:
         )
 
 
+class TelegramRuntimeStatusStore:
+    def __init__(self, path: str):
+        self.path = Path(path)
+
+    def write(self, payload: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+class SimpleRateLimiter:
+    def __init__(self, *, window_seconds: int, max_requests: int):
+        self.window_seconds = max(1, window_seconds)
+        self.max_requests = max(1, max_requests)
+        self.events: dict[str, deque[float]] = {}
+
+    def check(self, principal_id: str) -> None:
+        now = time.monotonic()
+        window_start = now - self.window_seconds
+        bucket = self.events.setdefault(principal_id, deque())
+        while bucket and bucket[0] < window_start:
+            bucket.popleft()
+        if len(bucket) >= self.max_requests:
+            raise RateLimitExceededError(
+                f"rate limit exceeded: {self.max_requests}/{self.window_seconds}s"
+            )
+        bucket.append(now)
+
+
 class TelegramCommandProcessor:
     def __init__(self, policy_path: str, api_client: TelegramHttpClient | None = None):
         self.policy_path = policy_path
         self.policy = PolicyStore(policy_path)
         self.broker = RestrictedOperatorBroker(policy_path)
         self.audit = AuditLogger(self.policy.broker.audit_log_path)
+        self.logger = logging.getLogger("davlos.telegram_bot")
+        self.rate_limiter = SimpleRateLimiter(
+            window_seconds=self.policy.telegram.rate_limit_window_seconds,
+            max_requests=self.policy.telegram.rate_limit_max_requests,
+        )
         token = os.environ.get(self.policy.telegram.bot_token_env, "")
         self.api_client = api_client or TelegramHttpClient(
             api_base_url=self.policy.telegram.api_base_url,
@@ -85,7 +126,10 @@ class TelegramCommandProcessor:
         )
 
     def process_update(self, update: dict[str, Any]) -> int | None:
-        message = update.get("message") or update.get("edited_message")
+        if isinstance(update.get("edited_message"), dict):
+            update_id = update.get("update_id")
+            return int(update_id) if isinstance(update_id, int) else None
+        message = update.get("message")
         if not isinstance(message, dict):
             return None
         chat = message.get("chat") or {}
@@ -96,11 +140,52 @@ class TelegramCommandProcessor:
             return int(update_id) if isinstance(update_id, int) else None
         chat_id = str(chat.get("id", ""))
         user_id = str(user.get("id", ""))
+        principal_key = f"chat:{chat_id}"
+        try:
+            self.rate_limiter.check(principal_key)
+        except RateLimitExceededError as exc:
+            reply = "Rate limit activo. Espera unos segundos y reintenta."
+            self._audit_channel_event(
+                event="telegram_command_rejected_rate_limited",
+                command=text.split(" ", 1)[0],
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=None,
+                ok=False,
+                error=str(exc),
+            )
+            self.api_client.send_message(chat_id=chat_id, text=reply)
+            return int(update_id) if isinstance(update_id, int) else None
         reply = self.handle_text(chat_id=chat_id, user_id=user_id, text=text)
-        self.api_client.send_message(chat_id=chat_id, text=reply)
+        try:
+            self.api_client.send_message(chat_id=chat_id, text=reply)
+        except Exception as exc:
+            self.logger.warning("telegram send_message failed chat_id=%s error=%s", chat_id, exc)
         return int(update_id) if isinstance(update_id, int) else None
 
     def handle_text(self, *, chat_id: str, user_id: str, text: str) -> str:
+        if len(text) > self.policy.telegram.max_command_length:
+            self._audit_channel_event(
+                event="telegram_command_rejected_invalid_params",
+                command="/oversize",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=None,
+                ok=False,
+                error="command exceeds max_command_length",
+            )
+            return "Comando demasiado largo."
+        if "\n" in text or "\r" in text:
+            self._audit_channel_event(
+                event="telegram_command_rejected_invalid_params",
+                command="/multiline",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=None,
+                ok=False,
+                error="multiline commands are not allowed",
+            )
+            return "Comando inválido."
         command, argument_text = self._split_command(text)
         principal, operator_id = self.policy.resolve_telegram_operator(chat_id=chat_id, user_id=user_id)
         if principal is None or operator_id is None:
@@ -353,6 +438,8 @@ class TelegramCommandProcessor:
         if not argument_text:
             raise PolicyError("uso: /execute <action_id> [k=v ...]")
         parts = argument_text.split()
+        if len(parts) > 8:
+            raise PolicyError("demasiados parámetros")
         action_id = parts[0].strip()
         raw_params = self._parse_key_value_tokens(parts[1:])
         if action_id == "action.health.general.v1":
@@ -404,6 +491,10 @@ class TelegramCommandProcessor:
             value = urllib.parse.unquote_plus(value.strip())
             if not key:
                 raise PolicyError("clave vacía en parámetros")
+            if len(key) > 64:
+                raise PolicyError("clave de parámetro demasiado larga")
+            if len(value) > 512:
+                raise PolicyError("valor de parámetro demasiado largo")
             params[key] = value
         return params
 
@@ -476,15 +567,53 @@ class TelegramCommandProcessor:
         )
 
 
+def build_logger(log_level: str) -> logging.Logger:
+    logger = logging.getLogger("davlos.telegram_bot")
+    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    logger.handlers.clear()
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+def runtime_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def build_runtime_status(
+    *,
+    state: str,
+    policy_path: str,
+    next_offset: int | None,
+    last_update_id: int | None = None,
+    last_error: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ts": runtime_timestamp(),
+        "state": state,
+        "policy_path": policy_path,
+        "next_offset": next_offset,
+    }
+    if last_update_id is not None:
+        payload["last_update_id"] = last_update_id
+    if last_error is not None:
+        payload["last_error"] = last_error
+    return payload
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DAVLOS OpenClaw Telegram adapter MVP")
     parser.add_argument("--policy", required=True, help="Path to restricted operator policy json")
     parser.add_argument("--once", action="store_true", help="Poll Telegram once and exit")
+    parser.add_argument("--log-level", default="INFO", help="Python log level")
     return parser
 
 
 def main() -> int:
     args = build_arg_parser().parse_args()
+    logger = build_logger(args.log_level)
     processor = TelegramCommandProcessor(args.policy)
     if not processor.policy.telegram.enabled:
         raise SystemExit("telegram integration is disabled in policy")
@@ -493,20 +622,55 @@ def main() -> int:
         raise SystemExit(f"missing env var: {processor.policy.telegram.bot_token_env}")
 
     offset_store = TelegramOffsetStore(processor.policy.telegram.offset_store_path)
+    status_store = TelegramRuntimeStatusStore(processor.policy.telegram.runtime_status_path)
     next_offset = offset_store.load()
-    while True:
-        updates = processor.api_client.get_updates(
-            offset=next_offset,
-            timeout=processor.policy.telegram.poll_timeout_seconds,
+    backoff_seconds = 1
+    status_store.write(
+        build_runtime_status(
+            state="starting",
+            policy_path=args.policy,
+            next_offset=next_offset,
         )
-        for update in updates:
-            handled_update_id = processor.process_update(update)
-            if handled_update_id is not None:
-                next_offset = handled_update_id + 1
-                offset_store.save(next_offset)
-        if args.once:
-            return 0
-        time.sleep(1)
+    )
+    while True:
+        try:
+            updates = processor.api_client.get_updates(
+                offset=next_offset,
+                timeout=processor.policy.telegram.poll_timeout_seconds,
+            )
+            last_update_id: int | None = None
+            for update in updates:
+                handled_update_id = processor.process_update(update)
+                if handled_update_id is not None:
+                    last_update_id = handled_update_id
+                    next_offset = handled_update_id + 1
+                    offset_store.save(next_offset)
+            status_store.write(
+                build_runtime_status(
+                    state="running",
+                    policy_path=args.policy,
+                    next_offset=next_offset,
+                    last_update_id=last_update_id,
+                )
+            )
+            backoff_seconds = 1
+            if args.once:
+                return 0
+            time.sleep(1)
+        except (TelegramApiError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            logger.warning("telegram polling failed error=%s backoff_seconds=%s", exc, backoff_seconds)
+            status_store.write(
+                build_runtime_status(
+                    state="degraded",
+                    policy_path=args.policy,
+                    next_offset=next_offset,
+                    last_error=str(exc),
+                )
+            )
+            if args.once:
+                return 1
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, 30)
 
 
 if __name__ == "__main__":

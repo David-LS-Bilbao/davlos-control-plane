@@ -110,6 +110,10 @@ class BrokerTests(unittest.TestCase):
                         "poll_timeout_seconds": 1,
                         "audit_tail_lines": 5,
                         "offset_store_path": str(self.root / "state" / "telegram_offset.json"),
+                        "runtime_status_path": str(self.root / "state" / "telegram_runtime_status.json"),
+                        "rate_limit_window_seconds": 30,
+                        "rate_limit_max_requests": 6,
+                        "max_command_length": 512,
                         "allowed_chats": {
                             "1001": {
                                 "operator_id": "authorized-operator",
@@ -276,6 +280,45 @@ class BrokerTests(unittest.TestCase):
         self.assertIsNotNone(effective)
         self.assertEqual(effective.status, "disabled")
 
+    def test_enable_with_invalid_ttl_does_not_leave_partial_mutation(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["actions"]["action.dropzone.write.v1"]["enabled"] = False
+        self.policy_path.write_text(json.dumps(payload))
+        rc = broker_cli.enable_with_optional_ttl(
+            str(self.policy_path),
+            "action.dropzone.write.v1",
+            ttl_minutes=None,
+            expires_at="not-a-datetime",
+            operator_id="authorized-operator",
+            updated_by="authorized-operator",
+            reason="broken_ttl_attempt",
+        )
+        self.assertEqual(rc, 1)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "disabled")
+
+    def test_enable_with_ttl_sets_enabled_and_expiration_atomically(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["actions"]["action.dropzone.write.v1"]["enabled"] = False
+        self.policy_path.write_text(json.dumps(payload))
+        rc = broker_cli.enable_with_optional_ttl(
+            str(self.policy_path),
+            "action.dropzone.write.v1",
+            ttl_minutes=15,
+            expires_at=None,
+            operator_id="authorized-operator",
+            updated_by="authorized-operator",
+            reason="enable_with_ttl",
+        )
+        self.assertEqual(rc, 0)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+        self.assertIsNotNone(effective.expires_at)
+
     def test_unauthorized_operator_cannot_change_policy(self) -> None:
         rc = broker_cli.set_enabled(
             str(self.policy_path),
@@ -319,6 +362,44 @@ class BrokerTests(unittest.TestCase):
         self.assertIsNotNone(effective)
         self.assertIsNone(effective.expires_at)
 
+    def test_operator_cannot_enable_control_action(self) -> None:
+        rc = broker_cli.set_enabled(
+            str(self.policy_path),
+            "action.openclaw.restart.v1",
+            True,
+            "authorized-operator",
+            "authorized-operator",
+            "unauthorized_control_enable",
+        )
+        self.assertEqual(rc, 1)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.openclaw.restart.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "disabled")
+
+    def test_admin_can_enable_control_action(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["operator_auth"]["operators"]["admin-operator"] = {
+            "role": "admin",
+            "enabled": True,
+            "display_name": "Admin Operator",
+            "reason": "test_admin",
+        }
+        self.policy_path.write_text(json.dumps(payload))
+        rc = broker_cli.set_enabled(
+            str(self.policy_path),
+            "action.openclaw.restart.v1",
+            True,
+            "admin-operator",
+            "admin-operator",
+            "authorized_control_enable",
+        )
+        self.assertEqual(rc, 0)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.openclaw.restart.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+
     def test_telegram_status_for_authorized_chat(self) -> None:
         reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="/status")
         self.assertIn("actions_total=", reply)
@@ -344,6 +425,22 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(reply, "Operador no autorizado para action.dropzone.write.v1.")
         audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
         self.assertIn("telegram_command_rejected_operator_not_authorized", audit_events)
+
+    def test_telegram_edited_message_does_not_reexecute_action(self) -> None:
+        update = {
+            "update_id": 55,
+            "edited_message": {
+                "chat": {"id": 1001},
+                "from": {"id": 42},
+                "text": "/execute action.health.general.v1",
+            },
+        }
+        handled_update_id = self.telegram.process_update(update)
+        self.assertEqual(handled_update_id, 55)
+        self.assertEqual(self.telegram_client.sent_messages, [])
+        if self.audit_path.exists():
+            audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+            self.assertNotIn("telegram_action_requested", audit_events)
 
 
 if __name__ == "__main__":

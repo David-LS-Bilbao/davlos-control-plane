@@ -26,7 +26,7 @@ def require_operator_permission(
     mutation: str,
 ) -> tuple[bool, str | None]:
     try:
-        operator = store.authorize_operator(operator_id, "policy.mutate")
+        operator = store.authorize_operator_for_action_mutation(operator_id, action_id)
         return True, operator.role
     except PolicyError as exc:
         AuditLogger(store.broker.audit_log_path).write(
@@ -244,19 +244,60 @@ def enable_with_optional_ttl(
     updated_by: str,
     reason: str,
 ) -> int:
-    rc = set_enabled(policy_path, action_id, True, operator_id, updated_by, reason)
-    if rc != 0:
-        return rc
-    if ttl_minutes is None and expires_at is None:
-        return 0
-    return set_ttl(
-        policy_path,
-        action_id,
-        ttl_minutes=ttl_minutes,
-        expires_at=expires_at,
-        updated_by=updated_by,
-        reason=reason,
+    try:
+        store = PolicyStore(policy_path)
+        resolved_operator_id = resolve_operator_id(operator_id, updated_by)
+        authorized, operator_role = require_operator_permission(
+            store,
+            action_id=action_id,
+            operator_id=resolved_operator_id,
+            reason=reason,
+            mutation="enable_with_optional_ttl",
+        )
+        if not authorized:
+            return 1
+        effective_expiry = None
+        if ttl_minutes is not None and expires_at is not None:
+            print(json.dumps({"ok": False, "error": "ttl_minutes_and_expires_at_are_mutually_exclusive"}, indent=2))
+            return 1
+        if ttl_minutes is not None:
+            effective_expiry = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+        elif expires_at is not None:
+            effective_expiry = parse_optional_datetime(expires_at, "cli.expires_at")
+        store.set_action_enabled_with_expiration(
+            action_id,
+            enabled=True,
+            expires_at=effective_expiry,
+            updated_by=resolved_operator_id or updated_by,
+            reason=reason,
+        )
+    except (PolicyError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2))
+        return 1
+    expires_at_value = effective_expiry.isoformat().replace("+00:00", "Z") if effective_expiry else None
+    AuditLogger(store.broker.audit_log_path).write(
+        event="policy_state_changed",
+        action_id=action_id,
+        actor=resolved_operator_id or updated_by,
+        operator_id=resolved_operator_id,
+        operator_role=operator_role,
+        authorized=True,
+        params={"change": "enabled_with_ttl", "enabled": True, "expires_at": expires_at_value, "reason": reason},
+        ok=True,
+        result={"enabled": True, "expires_at": expires_at_value},
     )
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "action_id": action_id,
+                "enabled": True,
+                "expires_at": expires_at_value,
+            },
+            indent=2,
+        )
+    )
+    return 0
 
 
 def set_ttl(

@@ -212,6 +212,10 @@ class PolicyStore:
                 poll_timeout_seconds=20,
                 audit_tail_lines=10,
                 offset_store_path="/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+                runtime_status_path="/opt/automation/agents/openclaw/broker/state/telegram_runtime_status.json",
+                rate_limit_window_seconds=30,
+                rate_limit_max_requests=6,
+                max_command_length=512,
                 allowed_chats={},
                 allowed_users={},
             )
@@ -229,6 +233,15 @@ class PolicyStore:
                     "/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
                 )
             ),
+            runtime_status_path=str(
+                payload.get(
+                    "runtime_status_path",
+                    "/opt/automation/agents/openclaw/broker/state/telegram_runtime_status.json",
+                )
+            ),
+            rate_limit_window_seconds=int(payload.get("rate_limit_window_seconds", 30)),
+            rate_limit_max_requests=int(payload.get("rate_limit_max_requests", 6)),
+            max_command_length=int(payload.get("max_command_length", 512)),
             allowed_chats=PolicyStore._load_telegram_principals(
                 payload.get("allowed_chats", {}),
                 "telegram.allowed_chats",
@@ -324,6 +337,18 @@ class PolicyStore:
             raise PolicyError(f"operator lacks permission {permission}: {operator_id}")
         return operator
 
+    def authorize_operator_for_action_mutation(
+        self,
+        operator_id: str | None,
+        action_id: str,
+    ) -> OperatorRecord:
+        declared = self.actions.get(action_id)
+        if declared is None:
+            raise PolicyError(f"unknown action_id: {action_id}")
+        operator = self.authorize_operator(operator_id, "policy.mutate")
+        self.authorize_operator(operator_id, declared.permission)
+        return operator
+
     def resolve_telegram_operator(
         self,
         *,
@@ -399,6 +424,29 @@ class PolicyStore:
         action_state["enabled"] = enabled
         action_state["updated_by"] = updated_by
         action_state["reason"] = reason or ("enabled_via_cli" if enabled else "disabled_via_cli")
+        self._persist_runtime_state()
+
+    def set_action_enabled_with_expiration(
+        self,
+        action_id: str,
+        *,
+        enabled: bool,
+        expires_at: datetime | None,
+        updated_by: str = "cli",
+        reason: str | None = None,
+    ) -> None:
+        declared = self.actions.get(action_id)
+        if declared is None:
+            raise PolicyError(f"unknown action_id: {action_id}")
+        action_state = self.runtime_state.setdefault(action_id, {})
+        action_state["enabled"] = enabled
+        action_state["expires_at"] = (
+            expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            if expires_at is not None
+            else None
+        )
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason or ("enabled_with_expiration_via_cli" if enabled else "disabled_via_cli")
         self._persist_runtime_state()
 
     def set_action_expiration(

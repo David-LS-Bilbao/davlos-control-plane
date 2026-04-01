@@ -83,6 +83,10 @@ class TelegramConfig:
     poll_timeout_seconds: int
     audit_tail_lines: int
     offset_store_path: str
+    runtime_status_path: str
+    rate_limit_window_seconds: int
+    rate_limit_max_requests: int
+    max_command_length: int
     allowed_chats: dict[str, TelegramPrincipalRecord]
     allowed_users: dict[str, TelegramPrincipalRecord]
 
