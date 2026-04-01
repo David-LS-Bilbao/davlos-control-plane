@@ -22,13 +22,13 @@ Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
 
 ## imagen fijada para el primer arranque
 
-- `ghcr.io/openclaw/openclaw:2026.2.3`
+- `ghcr.io/openclaw/openclaw@sha256:acc3631077173c8050278a44896947b6052dd5c8ebace4ee1a452a276bd28bab`
 
-Estrategia consolidada de imagen para Fase 1:
+Estrategia consolidada de imagen:
 
-- el runtime actual puede mantenerse en el tag revisado mientras no se haga un refresh de imagen
-- el siguiente cambio deliberado sobre imagen debe fijarse por digest revisado
-- no hacer rotaciones oportunistas de imagen dentro de una fase dedicada a hardening documental y de boundary
+- el runtime validado actualmente corresponde al tag revisado `ghcr.io/openclaw/openclaw:2026.2.3`
+- su digest resuelto y aprobado para despliegues nuevos o reprovisionados es `sha256:acc3631077173c8050278a44896947b6052dd5c8ebace4ee1a452a276bd28bab`
+- evitar rotaciones oportunistas de imagen fuera de una intervención deliberada
 
 ## configuración mínima efectiva
 

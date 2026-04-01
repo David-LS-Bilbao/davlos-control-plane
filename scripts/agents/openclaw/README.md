@@ -62,7 +62,7 @@ sudo bash /opt/control-plane/scripts/agents/openclaw/20_validate_runtime_readine
 - `STAGED_INCOMPLETE`
   - faltan rutas, archivos o claves mínimas, incluida la ruta de secretos si no existe
 - `STAGED_READY_FOR_IMAGE_AND_SECRETS`
-  - el staging base está hecho y la ruta de secretos ya existe, pero faltan imagen real, contenido de secretos y/o `config/openclaw.json`
+  - el staging base está hecho y la ruta de secretos ya existe, pero faltan imagen real preferiblemente fijada por digest, contenido de secretos y/o `config/openclaw.json`
   - si existe `config/openclaw.json.example`, se reporta como contrato bootstrap presente
 - `STAGED_READY_FOR_DEPLOY_PRECHECKS`
   - el runtime ya tiene scaffold, imagen no-placeholder, ruta de secretos con contenido y `config/openclaw.json`; el siguiente tramo ya puede ser precheck antes del deploy real

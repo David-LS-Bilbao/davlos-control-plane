@@ -19,7 +19,7 @@ TARGET_ENV="${COMPOSE_DIR}/.env"
 TARGET_CONFIG="${CONFIG_DIR}/openclaw.json"
 TARGET_CONFIG_EXAMPLE="${CONFIG_DIR}/openclaw.json.example"
 
-DEFAULT_IMAGE="ghcr.io/openclaw/openclaw:2026.2.3"
+DEFAULT_IMAGE="ghcr.io/openclaw/openclaw@sha256:acc3631077173c8050278a44896947b6052dd5c8ebace4ee1a452a276bd28bab"
 DEFAULT_PORT="18789"
 DEFAULT_GATEWAY_API_KEY="davlos-local"
 EXPECTED_AGENTS_SUBNET="172.22.0.0/16"
