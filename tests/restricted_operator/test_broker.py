@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -15,6 +16,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from broker import RestrictedOperatorBroker  # noqa: E402
 from models import BrokerRequest  # noqa: E402
+from policy import PolicyStore  # noqa: E402
 
 
 class _OkHandler(BaseHTTPRequestHandler):
@@ -38,6 +40,7 @@ class BrokerTests(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self.log_path = self.root / "logs" / "openclaw-current.log"
         self.audit_path = self.root / "audit" / "restricted_operator.jsonl"
+        self.state_path = self.root / "state" / "restricted_operator_state.json"
         self.dropzone = self.root / "dropzone"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.write_text("line-1\nline-2\nline-3\n")
@@ -55,16 +58,17 @@ class BrokerTests(unittest.TestCase):
                         "bind_host": "127.0.0.1",
                         "bind_port": 18890,
                         "audit_log_path": str(self.audit_path),
+                        "state_store_path": str(self.state_path),
                         "dropzone_dir": str(self.dropzone),
                         "max_tail_lines": 20,
                         "max_write_bytes": 128,
                     },
                     "actions": {
-                        "action.health.general.v1": {"enabled": True, "permission": "read", "description": ""},
-                        "action.logs.read.v1": {"enabled": True, "permission": "read", "description": ""},
-                        "action.webhook.trigger.v1": {"enabled": True, "permission": "trigger", "description": ""},
-                        "action.openclaw.restart.v1": {"enabled": False, "permission": "control", "description": ""},
-                        "action.dropzone.write.v1": {"enabled": True, "permission": "write", "description": ""}
+                        "action.health.general.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "read", "description": ""},
+                        "action.logs.read.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "read", "description": ""},
+                        "action.webhook.trigger.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": True, "reason": "test", "updated_by": "test", "permission": "trigger", "description": ""},
+                        "action.openclaw.restart.v1": {"enabled": False, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "control", "description": ""},
+                        "action.dropzone.write.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "write", "description": ""}
                     },
                     "health_checks": {
                         "local_ok": {"url": f"{self.base_url}/healthz", "expect_status": 200}
@@ -96,6 +100,8 @@ class BrokerTests(unittest.TestCase):
         result = self.broker.execute(BrokerRequest(action_id="action.health.general.v1"))
         self.assertTrue(result.ok)
         self.assertEqual(result.result["checks"]["local_ok"]["status"], 200)
+        audit_lines = self.audit_path.read_text().strip().splitlines()
+        self.assertEqual(json.loads(audit_lines[-1])["event"], "action_executed")
 
     def test_logs_action(self) -> None:
         result = self.broker.execute(
@@ -126,11 +132,42 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(result.ok)
         self.assertEqual(result.result["status"], 200)
+        state = PolicyStore(str(self.policy_path))
+        effective = state.get_effective_action_state("action.webhook.trigger.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "consumed")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("action_consumed_one_shot", audit_events)
 
     def test_disabled_restart_action(self) -> None:
         result = self.broker.execute(BrokerRequest(action_id="action.openclaw.restart.v1"))
         self.assertFalse(result.ok)
         self.assertEqual(result.code, "forbidden")
+        self.assertEqual(result.event, "action_rejected_disabled")
+
+    def test_expired_action_is_rejected(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["actions"]["action.dropzone.write.v1"]["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat().replace("+00:00", "Z")
+        self.policy_path.write_text(json.dumps(payload))
+        broker = RestrictedOperatorBroker(str(self.policy_path))
+        result = broker.execute(
+            BrokerRequest(
+                action_id="action.dropzone.write.v1",
+                params={"filename": "ok.txt", "content": "hello"},
+            )
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.event, "action_rejected_expired")
+
+    def test_policy_validation_rejects_invalid_mode(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["actions"]["action.logs.read.v1"]["mode"] = "invalid"
+        self.policy_path.write_text(json.dumps(payload))
+        ok, errors = PolicyStore.validate_policy(self.policy_path)
+        self.assertFalse(ok)
+        self.assertTrue(errors)
 
 
 if __name__ == "__main__":

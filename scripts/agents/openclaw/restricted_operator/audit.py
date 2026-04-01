@@ -12,6 +12,7 @@ class AuditLogger:
     def write(
         self,
         *,
+        event: str,
         action_id: str,
         actor: str,
         params: dict,
@@ -23,6 +24,7 @@ class AuditLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
+            "event": event,
             "action_id": action_id,
             "actor": actor,
             "params": params,

@@ -3,6 +3,7 @@
     "bind_host": "127.0.0.1",
     "bind_port": 18890,
     "audit_log_path": "/opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl",
+    "state_store_path": "/opt/automation/agents/openclaw/broker/state/restricted_operator_state.json",
     "dropzone_dir": "/opt/automation/agents/openclaw/dropzone",
     "max_tail_lines": 200,
     "max_write_bytes": 4096
@@ -10,26 +11,51 @@
   "actions": {
     "action.health.general.v1": {
       "enabled": true,
+      "mode": "readonly",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_readonly",
+      "updated_by": "repo",
       "permission": "operator.read",
       "description": "Health general fijo del boundary OpenClaw/inference-gateway"
     },
     "action.logs.read.v1": {
       "enabled": true,
+      "mode": "readonly",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_readonly",
+      "updated_by": "repo",
       "permission": "operator.read",
       "description": "Lectura de logs permitidos por stream_id"
     },
     "action.webhook.trigger.v1": {
       "enabled": true,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_restricted",
+      "updated_by": "repo",
       "permission": "operator.trigger",
       "description": "Disparo de endpoint controlado por target_id"
     },
     "action.openclaw.restart.v1": {
       "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "requires_dedicated_root_owned_wrapper",
+      "updated_by": "repo",
       "permission": "operator.control",
       "description": "Reservado para wrapper root-owned futuro; no habilitado en MVP"
     },
     "action.dropzone.write.v1": {
       "enabled": true,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_restricted",
+      "updated_by": "repo",
       "permission": "operator.write",
       "description": "Escritura acotada en drop-zone controlada"
     }

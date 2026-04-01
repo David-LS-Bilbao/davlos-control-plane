@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -8,6 +9,11 @@ from typing import Any
 class ActionPolicy:
     action_id: str
     enabled: bool
+    mode: str
+    expires_at: datetime | None
+    one_shot: bool
+    reason: str | None
+    updated_by: str | None
     permission: str
     description: str
 
@@ -17,6 +23,7 @@ class BrokerConfig:
     bind_host: str
     bind_port: int
     audit_log_path: str
+    state_store_path: str
     dropzone_dir: str
     max_tail_lines: int
     max_write_bytes: int
@@ -58,6 +65,7 @@ class BrokerResult:
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     code: str | None = None
+    event: str | None = None
     audit_params: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,4 +79,22 @@ class BrokerResult:
             payload["error"] = self.error
         if self.code:
             payload["code"] = self.code
+        if self.event:
+            payload["event"] = self.event
         return payload
+
+
+@dataclass(frozen=True)
+class EffectiveActionState:
+    action_id: str
+    enabled: bool
+    mode: str
+    expires_at: str | None
+    one_shot: bool
+    one_shot_consumed: bool
+    reason: str | None
+    updated_by: str | None
+    permission: str
+    description: str
+    effective_allowed: bool
+    status: str
