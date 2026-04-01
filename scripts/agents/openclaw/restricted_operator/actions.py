@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+from models import BrokerResult
+from policy import PolicyStore
+
+
+class ActionError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class BaseAction:
+    action_id = ""
+
+    def __init__(self, policy: PolicyStore):
+        self.policy = policy
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return params
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        raise NotImplementedError
+
+    @staticmethod
+    def _require_dict(value: Any, field_name: str) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ActionError("invalid_params", f"{field_name} must be an object")
+        return value
+
+    @staticmethod
+    def _require_string(value: Any, field_name: str, *, max_len: int = 256) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ActionError("invalid_params", f"{field_name} must be a non-empty string")
+        if len(value) > max_len:
+            raise ActionError("invalid_params", f"{field_name} exceeds max length")
+        return value
+
+    @staticmethod
+    def _optional_int(value: Any, field_name: str, *, minimum: int, maximum: int) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int):
+            raise ActionError("invalid_params", f"{field_name} must be an integer")
+        if value < minimum or value > maximum:
+            raise ActionError("invalid_params", f"{field_name} out of allowed range")
+        return value
+
+
+class HealthAction(BaseAction):
+    action_id = "action.health.general.v1"
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        if params:
+            raise ActionError("invalid_params", "health action does not accept params")
+        statuses = {}
+        for check_id, check in self.policy.health_checks.items():
+            request = urllib.request.Request(check.url, method="GET")
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    body = response.read(512).decode("utf-8", "replace")
+                    statuses[check_id] = {
+                        "ok": response.status == check.expect_status,
+                        "status": response.status,
+                        "expect_status": check.expect_status,
+                        "body_preview": body[:120],
+                    }
+            except Exception as exc:
+                statuses[check_id] = {
+                    "ok": False,
+                    "status": "unreachable",
+                    "expect_status": check.expect_status,
+                    "error": str(exc),
+                }
+        overall_ok = all(item["ok"] for item in statuses.values()) if statuses else True
+        return BrokerResult(
+            ok=overall_ok,
+            action_id=self.action_id,
+            result={"checks": statuses},
+            audit_params={},
+        )
+
+
+class LogsAction(BaseAction):
+    action_id = "action.logs.read.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "stream_id": params.get("stream_id"),
+            "tail_lines": params.get("tail_lines"),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        stream_id = self._require_string(params.get("stream_id"), "stream_id", max_len=64)
+        tail_lines = self._optional_int(
+            params.get("tail_lines"),
+            "tail_lines",
+            minimum=1,
+            maximum=self.policy.broker.max_tail_lines,
+        )
+        stream = self.policy.log_streams.get(stream_id)
+        if stream is None:
+            raise ActionError("forbidden", "stream_id is not allowed")
+        lines_to_read = tail_lines or stream.tail_lines_default
+        path = Path(stream.path)
+        if not path.is_file():
+            raise ActionError("not_found", "allowed log stream path does not exist")
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = list(deque(handle, maxlen=lines_to_read))
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "stream_id": stream_id,
+                "path": str(path),
+                "tail_lines": lines_to_read,
+                "lines": [line.rstrip("\n") for line in lines],
+            },
+            audit_params=self.audit_params({"stream_id": stream_id, "tail_lines": lines_to_read}),
+        )
+
+
+class WebhookAction(BaseAction):
+    action_id = "action.webhook.trigger.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "target_id": params.get("target_id"),
+            "event_type": params.get("event_type"),
+            "note": params.get("note"),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        target_id = self._require_string(params.get("target_id"), "target_id", max_len=64)
+        event_type = self._require_string(params.get("event_type"), "event_type", max_len=64)
+        note = self._require_string(params.get("note"), "note", max_len=240)
+        target = self.policy.webhook_targets.get(target_id)
+        if target is None:
+            raise ActionError("forbidden", "target_id is not allowed")
+        body = json.dumps(
+            {
+                "action_id": self.action_id,
+                "target_id": target_id,
+                "event_type": event_type,
+                "note": note,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(target.url, data=body, method=target.method)
+        request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=target.timeout_seconds) as response:
+                response_body = response.read(512).decode("utf-8", "replace")
+                return BrokerResult(
+                    ok=200 <= response.status < 300,
+                    action_id=self.action_id,
+                    result={
+                        "target_id": target_id,
+                        "status": response.status,
+                        "response_preview": response_body[:120],
+                    },
+                    audit_params=self.audit_params(
+                        {"target_id": target_id, "event_type": event_type, "note": note}
+                    ),
+                )
+        except urllib.error.HTTPError as exc:
+            raise ActionError("upstream_http_error", f"webhook returned {exc.code}") from exc
+        except Exception as exc:
+            raise ActionError("upstream_unreachable", str(exc)) from exc
+
+
+class RestartOpenClawAction(BaseAction):
+    action_id = "action.openclaw.restart.v1"
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        if params:
+            raise ActionError("invalid_params", "restart action does not accept params")
+        return BrokerResult(
+            ok=False,
+            action_id=self.action_id,
+            error="restart not enabled in broker MVP",
+            code="not_implemented",
+            result={
+                "reason": "requires dedicated root-owned wrapper or scoped sudo policy",
+            },
+            audit_params={},
+        )
+
+
+class DropzoneWriteAction(BaseAction):
+    action_id = "action.dropzone.write.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        content = params.get("content", "")
+        return {
+            "filename": params.get("filename"),
+            "content_bytes": len(content.encode("utf-8")) if isinstance(content, str) else 0,
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        filename = self._require_string(params.get("filename"), "filename", max_len=128)
+        content = self._require_string(params.get("content"), "content", max_len=self.policy.broker.max_write_bytes)
+        if "/" in filename or "\\" in filename or filename in {".", ".."}:
+            raise ActionError("invalid_params", "filename must be a basename without traversal")
+        destination_root = Path(self.policy.broker.dropzone_dir).resolve()
+        destination_root.mkdir(parents=True, exist_ok=True)
+        destination = (destination_root / filename).resolve()
+        if destination.parent != destination_root:
+            raise ActionError("invalid_params", "resolved path escapes dropzone")
+        raw = content.encode("utf-8")
+        if len(raw) > self.policy.broker.max_write_bytes:
+            raise ActionError("invalid_params", "content exceeds configured max_write_bytes")
+        destination.write_bytes(raw)
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "filename": filename,
+                "path": str(destination),
+                "bytes_written": len(raw),
+            },
+            audit_params=self.audit_params({"filename": filename, "content": content}),
+        )
+
+
+def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
+    actions: list[BaseAction] = [
+        HealthAction(policy),
+        LogsAction(policy),
+        WebhookAction(policy),
+        RestartOpenClawAction(policy),
+        DropzoneWriteAction(policy),
+    ]
+    return {action.action_id: action for action in actions}

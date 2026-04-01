@@ -1,0 +1,64 @@
+{
+  "broker": {
+    "bind_host": "127.0.0.1",
+    "bind_port": 18890,
+    "audit_log_path": "/opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl",
+    "dropzone_dir": "/opt/automation/agents/openclaw/dropzone",
+    "max_tail_lines": 200,
+    "max_write_bytes": 4096
+  },
+  "actions": {
+    "action.health.general.v1": {
+      "enabled": true,
+      "permission": "operator.read",
+      "description": "Health general fijo del boundary OpenClaw/inference-gateway"
+    },
+    "action.logs.read.v1": {
+      "enabled": true,
+      "permission": "operator.read",
+      "description": "Lectura de logs permitidos por stream_id"
+    },
+    "action.webhook.trigger.v1": {
+      "enabled": true,
+      "permission": "operator.trigger",
+      "description": "Disparo de endpoint controlado por target_id"
+    },
+    "action.openclaw.restart.v1": {
+      "enabled": false,
+      "permission": "operator.control",
+      "description": "Reservado para wrapper root-owned futuro; no habilitado en MVP"
+    },
+    "action.dropzone.write.v1": {
+      "enabled": true,
+      "permission": "operator.write",
+      "description": "Escritura acotada en drop-zone controlada"
+    }
+  },
+  "health_checks": {
+    "openclaw_ui": {
+      "url": "http://127.0.0.1:18789/",
+      "expect_status": 200
+    },
+    "inference_gateway_healthz": {
+      "url": "http://127.0.0.1:11440/healthz",
+      "expect_status": 200
+    }
+  },
+  "log_streams": {
+    "openclaw_runtime": {
+      "path": "/opt/automation/agents/openclaw/logs/openclaw-current.log",
+      "tail_lines_default": 50
+    },
+    "restricted_operator_audit": {
+      "path": "/opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl",
+      "tail_lines_default": 50
+    }
+  },
+  "webhook_targets": {
+    "openclaw_controlled": {
+      "url": "http://127.0.0.1:18789/__davlos__/restricted-operator-hook",
+      "method": "POST",
+      "timeout_seconds": 5
+    }
+  }
+}
