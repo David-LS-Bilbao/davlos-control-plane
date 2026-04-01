@@ -454,7 +454,14 @@ show_openclaw_capabilities() {
     echo "CLI del broker no disponible desde esta sesión."
     return 0
   fi
-  if ! run_openclaw_broker_cli show; then
+  cat <<'EOF'
+-- lectura del estado efectivo --
+- readonly: visible para operador/viewer
+- allowed=yes: la acción podría ejecutarse ahora mismo
+- restricted: acción mutante o sensible
+EOF
+  echo
+  if ! run_openclaw_broker_cli show --format console; then
     echo
     echo "No se pudo leer el estado efectivo del broker desde esta sesión."
     echo "Posible causa: policy no visible o permisos insuficientes."
@@ -469,7 +476,9 @@ show_openclaw_capabilities_audit() {
     echo "CLI del broker no disponible desde esta sesión."
     return 0
   fi
-  if ! run_openclaw_broker_cli audit-tail --lines 20 | redact_sensitive_output; then
+  echo "-- solo lectura; por Telegram, /audit_tail puede quedar reservado a admin --"
+  echo
+  if ! run_openclaw_broker_cli audit-tail --lines 20 --format console | redact_sensitive_output; then
     echo "No se pudo leer la auditoria del broker desde esta sesión."
   fi
 }
@@ -497,16 +506,28 @@ prompt_optional() {
 apply_openclaw_capability_change() {
   local subcommand="$1"
   shift
+  local cli_output rc=0
   if ! openclaw_broker_cli_available; then
     echo "CLI del broker no disponible desde esta sesión."
     return 1
   fi
-  if run_openclaw_broker_cli "$@" | redact_sensitive_output; then
+  cli_output="$(run_openclaw_broker_cli "$@" 2>&1)" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    printf '%s\n' "${cli_output}" | redact_sensitive_output
     return 0
   fi
+  printf '%s\n' "${cli_output}" | redact_sensitive_output
   echo
   echo "No se pudo aplicar ${subcommand} desde esta sesión."
-  echo "Posible causa: permisos insuficientes sobre el state store del broker."
+  if printf '%s' "${cli_output}" | grep -q 'operator_not_authorized'; then
+    echo "Causa probable: el operator_id actual no tiene permiso suficiente para esta accion."
+  elif printf '%s' "${cli_output}" | grep -q 'unknown_action'; then
+    echo "Causa probable: action_id no reconocido por la policy viva."
+  elif printf '%s' "${cli_output}" | grep -q 'invalid datetime'; then
+    echo "Causa probable: TTL o fecha de expiracion invalida."
+  else
+    echo "Causa probable: policy no visible, permisos insuficientes o validacion rechazada."
+  fi
   return 1
 }
 
@@ -573,6 +594,9 @@ show_help() {
   echo
   cat <<'EOF'
 - Esta consola es readonly.
+- El submenu de capacidades mezcla lectura y mutacion controlada.
+- Lectura: ver estado y auditoria.
+- Mutacion: enable/disable/ttl/reset-one-shot, siempre via CLI/policy.
 - No reinicia servicios, no toca secretos y no modifica producción.
 - Si una comprobación requiere Docker o sudo y no está disponible, muestra un aviso y sigue.
 - La fuente de verdad operativa actual está en README.md y evidence/.
@@ -616,7 +640,7 @@ show_openclaw_menu() {
 2) Logs utiles
 3) Health
 4) Control basico previsto
-5) Capacidades OpenClaw
+5) Capacidades OpenClaw (read + mutate)
 9) Volver
 EOF
 }
@@ -625,12 +649,12 @@ show_openclaw_capabilities_menu() {
   print_header
   cat <<'EOF'
 [OpenClaw / capacidades]
-1) Ver acciones y estado efectivo
-2) Habilitar accion
-3) Deshabilitar accion
-4) Habilitar accion con TTL
-5) Resetear one-shot consumido
-6) Ver auditoria reciente
+1) Ver estado efectivo [readonly]
+2) Habilitar accion [mutating]
+3) Deshabilitar accion [mutating]
+4) Habilitar accion con TTL [mutating]
+5) Resetear one-shot consumido [mutating]
+6) Ver auditoria reciente [readonly]
 9) Volver
 EOF
 }

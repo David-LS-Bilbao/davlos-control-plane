@@ -60,9 +60,49 @@ def parse_cli_datetime(value: str | None) -> datetime | None:
     return parse_optional_datetime(value, "cli.datetime")
 
 
-def dump_states(store: PolicyStore, at: datetime | None) -> int:
+def format_bool(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def dump_states(store: PolicyStore, at: datetime | None, output_format: str) -> int:
+    states = store.list_effective_action_states(now=at)
+    if output_format == "console":
+        summary = {"enabled": 0, "disabled": 0, "expired": 0, "consumed": 0}
+        for state in states:
+            summary[state.status] = summary.get(state.status, 0) + 1
+        print("scope=restricted_operator_capabilities")
+        print(
+            "summary total={total} enabled={enabled} disabled={disabled} expired={expired} consumed={consumed}".format(
+                total=len(states),
+                enabled=summary.get("enabled", 0),
+                disabled=summary.get("disabled", 0),
+                expired=summary.get("expired", 0),
+                consumed=summary.get("consumed", 0),
+            )
+        )
+        print("legend readonly=view restricted=mutate allowed=can_execute now")
+        for state in states:
+            flags = []
+            if state.one_shot:
+                flags.append(f"one_shot={format_bool(state.one_shot)}")
+                flags.append(f"consumed={format_bool(state.one_shot_consumed)}")
+            if state.expires_at:
+                flags.append(f"expires_at={state.expires_at}")
+            if state.reason:
+                flags.append(f"reason={state.reason}")
+            print(
+                "{action_id} | status={status} | mode={mode} | allowed={allowed} | permission={permission}{suffix}".format(
+                    action_id=state.action_id,
+                    status=state.status,
+                    mode=state.mode,
+                    allowed=format_bool(state.effective_allowed),
+                    permission=state.permission,
+                    suffix=f" | {' | '.join(flags)}" if flags else "",
+                )
+            )
+        return 0
     rows = []
-    for state in store.list_effective_action_states(now=at):
+    for state in states:
         rows.append(
             {
                 "action_id": state.action_id,
@@ -397,7 +437,7 @@ def clear_ttl(
     return 0
 
 
-def audit_tail(policy_path: str, lines: int) -> int:
+def audit_tail(policy_path: str, lines: int, output_format: str) -> int:
     try:
         store = PolicyStore(policy_path)
     except PolicyError as exc:
@@ -405,6 +445,10 @@ def audit_tail(policy_path: str, lines: int) -> int:
         return 1
     audit_path = Path(store.broker.audit_log_path)
     if not audit_path.exists():
+        if output_format == "console":
+            print("scope=restricted_operator_audit lines=0")
+            print("no_events=yes")
+            return 0
         print(json.dumps({"ok": True, "events": []}, indent=2))
         return 0
     raw_lines = audit_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -414,6 +458,28 @@ def audit_tail(policy_path: str, lines: int) -> int:
             events.append(json.loads(line))
         except json.JSONDecodeError:
             events.append({"raw": line, "parse_error": True})
+    if output_format == "console":
+        print(f"scope=restricted_operator_audit lines={len(events)}")
+        for event in events:
+            if event.get("parse_error"):
+                print("raw_event parse_error=yes")
+                continue
+            parts = [
+                f"ts={event.get('ts', '?')}",
+                f"event={event.get('event', '?')}",
+                f"action_id={event.get('action_id', '-')}",
+                f"ok={event.get('ok')}",
+            ]
+            if event.get("operator_id"):
+                parts.append(f"operator_id={event.get('operator_id')}")
+            if event.get("operator_role"):
+                parts.append(f"operator_role={event.get('operator_role')}")
+            if event.get("code"):
+                parts.append(f"code={event.get('code')}")
+            if event.get("error"):
+                parts.append(f"error={event.get('error')}")
+            print(" | ".join(parts))
+        return 0
     print(json.dumps({"ok": True, "events": events}, indent=2, sort_keys=True))
     return 0
 
@@ -425,6 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show", help="Show effective action states")
     show_parser.add_argument("--at", help="Optional ISO8601 UTC timestamp to simulate effective state")
+    show_parser.add_argument("--format", choices=["json", "console"], default="json")
 
     subparsers.add_parser("validate", help="Validate policy json")
 
@@ -470,6 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit_parser = subparsers.add_parser("audit-tail", help="Show recent audit events")
     audit_parser.add_argument("--lines", type=int, default=20)
+    audit_parser.add_argument("--format", choices=["json", "console"], default="json")
     return parser
 
 
@@ -484,7 +552,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "errors": [str(exc)]}, indent=2))
         return 1
     if args.command == "show":
-        return dump_states(store, parse_cli_datetime(args.at))
+        return dump_states(store, parse_cli_datetime(args.at), args.format)
     if args.command == "consume-one-shot":
         return consume_one_shot(args.policy, args.action_id, args.operator_id, args.updated_by, args.reason)
     if args.command == "reset-one-shot":
@@ -514,7 +582,7 @@ def main() -> int:
     if args.command == "clear-ttl":
         return clear_ttl(args.policy, args.action_id, args.operator_id, args.updated_by, args.reason)
     if args.command == "audit-tail":
-        return audit_tail(args.policy, args.lines)
+        return audit_tail(args.policy, args.lines, args.format)
     parser.print_help()
     return 1
 

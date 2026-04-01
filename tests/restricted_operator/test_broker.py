@@ -346,11 +346,22 @@ class BrokerTests(unittest.TestCase):
         store = PolicyStore(str(self.policy_path))
         output = io.StringIO()
         with redirect_stdout(output):
-            rc = broker_cli.dump_states(store, None)
+            rc = broker_cli.dump_states(store, None, "json")
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertIn("actions", payload)
         self.assertTrue(any(item["action_id"] == "action.health.general.v1" for item in payload["actions"]))
+
+    def test_console_show_output_is_human_readable(self) -> None:
+        store = PolicyStore(str(self.policy_path))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            rc = broker_cli.dump_states(store, None, "console")
+        self.assertEqual(rc, 0)
+        rendered = output.getvalue()
+        self.assertIn("scope=restricted_operator_capabilities", rendered)
+        self.assertIn("action.health.general.v1", rendered)
+        self.assertIn("allowed=yes", rendered)
 
     def test_viewer_cannot_change_policy(self) -> None:
         rc = broker_cli.set_ttl(
@@ -466,6 +477,17 @@ class BrokerTests(unittest.TestCase):
         if self.audit_path.exists():
             audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
             self.assertNotIn("telegram_action_requested", audit_events)
+
+    def test_console_audit_tail_empty_is_human_readable(self) -> None:
+        if self.audit_path.exists():
+            self.audit_path.unlink()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            rc = broker_cli.audit_tail(str(self.policy_path), 5, "console")
+        self.assertEqual(rc, 0)
+        rendered = output.getvalue()
+        self.assertIn("scope=restricted_operator_audit", rendered)
+        self.assertIn("no_events=yes", rendered)
 
 
 if __name__ == "__main__":
