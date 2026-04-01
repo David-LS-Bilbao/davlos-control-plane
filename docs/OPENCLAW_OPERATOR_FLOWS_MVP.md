@@ -16,18 +16,21 @@ No introduce nuevas capacidades. Su objetivo es medir fricción real de operador
 
 Herramienta:
 - `bash scripts/console/davlos-vpn-console.sh openclaw-capabilities`
+- `bash scripts/console/davlos-vpn-console.sh openclaw-diagnostics`
 
 Resultado:
 - la consola muestra estado efectivo legible
 - el operador ve `status`, `mode`, `allowed`, `permission`
 - cuando aplica, también ve `expires_at`, `one_shot` y `consumed`
+- con el helper readonly instalado, la vista sale del runtime real aunque la sesión no pueda leer `/opt/automation` directamente
 
 Valor operativo:
 - sirve como vista rápida diaria del boundary de capacidades
 - no obliga a leer JSON ni a inspeccionar la policy a mano
 
 Fricción residual:
-- si se quiere ver trazabilidad real, la plantilla de repo no trae eventos runtime; hay que mirar el audit log activo o validar sobre una policy/runtime temporal
+- si se quiere ver trazabilidad real, hay que mirar el audit log activo; la plantilla del repo sigue siendo declarativa
+- sin helper readonly o permisos equivalentes, la visibilidad del runtime puede degradarse
 
 ### 2. Habilitar una capacidad con TTL
 
@@ -60,7 +63,7 @@ Valor operativo:
 
 Fricción residual:
 - el operador necesita entender que `one_shot` depende de estado runtime, no solo del JSON versionado
-- si se mezcla plantilla declarativa con state store viejo, la lectura puede resultar confusa
+- si no se lee el runtime real o se mezcla plantilla declarativa con state store viejo, la lectura puede resultar confusa
 
 ### 4. Ejecutar una acción permitida por Telegram
 
@@ -85,14 +88,15 @@ Fricción residual:
 ## Qué Funciona Bien
 
 - La consola ya es suficiente para operar capacidades OpenClaw sin otra UI.
+- El helper readonly reduce mucho la fricción entre policy declarativa y runtime real.
 - La policy viva con TTL y one-shot cubre el ciclo básico de apertura, consumo y cierre.
 - Telegram aporta valor como canal corto de consulta/ejecución.
 - La trazabilidad mínima es suficiente para una operación MVP disciplinada.
 
 ## Fricciones Reales Detectadas
 
-- La diferencia entre policy declarada y runtime state no siempre es evidente para un operador nuevo.
-- La auditoría desde plantilla de repo puede salir vacía aunque el sistema real tenga actividad.
+- La diferencia conceptual entre policy declarada y runtime state sigue existiendo para un operador nuevo, aunque la consola la mitiga mejor si el helper readonly está activo.
+- Sin helper readonly o permisos equivalentes, la auditoría y el estado real pueden degradarse aunque el sistema siga operativo.
 - Telegram es práctico para comandos breves, pero el formato de parámetros no escala bien a payloads más ricos.
 - Faltan algunas acciones operativas pequeñas si se quisiera ampliar uso diario, por ejemplo verificaciones o lecturas más específicas; eso no bloquea el MVP actual.
 
@@ -111,6 +115,6 @@ La recomendación es:
 La siguiente inversión útil no es otro canal, sino una de estas dos opciones:
 
 - añadir una acción nueva y cerrada de alto valor operativo
-- o mejorar la visibilidad de runtime activo frente a plantilla declarativa
+- o ampliar la observabilidad y ergonomía sobre el runtime activo ya existente
 
 Mientras eso no sea necesario, el sistema actual ya soporta pruebas operativas reales con fricción razonable.

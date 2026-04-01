@@ -8,7 +8,13 @@ OPENCLAW_RUNTIME_COMPOSE="${OPENCLAW_RUNTIME_ROOT}/compose/docker-compose.yaml"
 OPENCLAW_RUNTIME_LOG_DIR="${OPENCLAW_RUNTIME_ROOT}/logs"
 OPENCLAW_SECRETS_ROOT="/etc/davlos/secrets/openclaw"
 OPENCLAW_RUNTIME_MODELS_STATE="${OPENCLAW_RUNTIME_ROOT}/state/agents/main/agent/models.json"
+OPENCLAW_BROKER_RUNTIME_ROOT="${OPENCLAW_RUNTIME_ROOT}/broker"
+OPENCLAW_BROKER_RUNTIME_STATE="${OPENCLAW_BROKER_RUNTIME_ROOT}/state/restricted_operator_state.json"
+OPENCLAW_BROKER_AUDIT_LOG="${OPENCLAW_BROKER_RUNTIME_ROOT}/audit/restricted_operator.jsonl"
+OPENCLAW_TELEGRAM_RUNTIME_STATUS="${OPENCLAW_BROKER_RUNTIME_ROOT}/state/telegram_runtime_status.json"
+OPENCLAW_READONLY_HELPER="/usr/local/sbin/davlos-openclaw-readonly"
 INFERENCE_GATEWAY_SERVICE="inference-gateway.service"
+OPENCLAW_TELEGRAM_SERVICE="openclaw-telegram-bot.service"
 INFERENCE_GATEWAY_LOCAL_ENDPOINT="http://127.0.0.1:11440"
 INFERENCE_GATEWAY_AGENTS_ENDPOINT="http://172.22.0.1:11440/v1"
 OLLAMA_LOCAL_ENDPOINT="http://127.0.0.1:11434"
@@ -185,8 +191,73 @@ openclaw_broker_policy_path() {
   return 1
 }
 
+openclaw_broker_policy_source() {
+  if [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME}" ]]; then
+    printf '%s\n' "runtime"
+    return 0
+  fi
+  if [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO}" ]]; then
+    printf '%s\n' "repo_fallback"
+    return 0
+  fi
+  printf '%s\n' "unavailable"
+}
+
+openclaw_runtime_summary_field() {
+  local field="$1"
+  local helper_output
+  if ! openclaw_readonly_helper_available; then
+    return 1
+  fi
+  helper_output="$(run_openclaw_readonly_helper runtime_summary 2>/dev/null || true)"
+  printf '%s\n' "${helper_output}" | sed -n "s/^${field}=//p" | head -n 1
+}
+
+openclaw_policy_source_display() {
+  local value
+  value="$(openclaw_runtime_summary_field policy_source 2>/dev/null || true)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+  openclaw_broker_policy_source
+}
+
+openclaw_policy_path_display() {
+  local value
+  value="$(openclaw_runtime_summary_field policy_path 2>/dev/null || true)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+  openclaw_broker_policy_path 2>/dev/null || printf '%s\n' "unavailable"
+}
+
 openclaw_broker_cli_available() {
   command -v python3 >/dev/null 2>&1 && [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_CLI}" ]]
+}
+
+openclaw_readonly_helper_available() {
+  [[ -f "${OPENCLAW_READONLY_HELPER}" ]] && sudo -n "${OPENCLAW_READONLY_HELPER}" runtime_summary >/dev/null 2>&1
+}
+
+run_openclaw_readonly_helper() {
+  if ! [[ -f "${OPENCLAW_READONLY_HELPER}" ]]; then
+    echo "Helper readonly de OpenClaw no instalado en el host." >&2
+    return 1
+  fi
+  sudo -n "${OPENCLAW_READONLY_HELPER}" "$@"
+}
+
+runtime_access_badge() {
+  local path="$1"
+  if [[ -r "${path}" ]]; then
+    printf '%s %s\n' "$(badge success yes)" "direct"
+  elif openclaw_readonly_helper_available; then
+    printf '%s %s\n' "$(badge success yes)" "via_helper"
+  else
+    printf '%s %s\n' "$(badge warning no)" "unavailable"
+  fi
 }
 
 openclaw_operator_identity() {
@@ -199,6 +270,33 @@ openclaw_operator_identity() {
     return 0
   fi
   printf '%s\n' "${USER:-unknown}"
+}
+
+service_active_state() {
+  local service="$1"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf '%s\n' "unknown"
+    return 0
+  fi
+  systemctl is-active "${service}" 2>/dev/null || true
+}
+
+service_sub_state() {
+  local service="$1"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf '%s\n' "unknown"
+    return 0
+  fi
+  systemctl show -p SubState --value "${service}" 2>/dev/null || true
+}
+
+service_main_pid() {
+  local service="$1"
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf '%s\n' "unknown"
+    return 0
+  fi
+  systemctl show -p MainPID --value "${service}" 2>/dev/null || true
 }
 
 resolve_openclaw_operator_identity() {
@@ -341,7 +439,7 @@ show_network_status() {
   print_section_title "Red / listeners / puertos clave"
   echo
   print_subsection "listeners clave"
-  if ! ss -lntp 2>/dev/null | grep -E ':(22|80|81|443|5678|51820|11434)\b'; then
+  if ! ss -lntp 2>/dev/null | grep -E ':(22|80|81|443|5678|51820|11434|11440)\b'; then
     notice_line warning "No se pudieron listar los puertos clave desde esta sesion."
   fi
 }
@@ -361,11 +459,19 @@ show_evidence_paths() {
     "${REPO_ROOT}/docs/MVP_PHASE_5_AGENT_ZONE.md" \
     "${REPO_ROOT}/docs/MVP_PHASE_6_INFERENCE_GATEWAY.md" \
     "${REPO_ROOT}/docs/MVP_PHASE_8_RESTRICTED_OPERATOR.md" \
+    "${REPO_ROOT}/docs/TELEGRAM_OPENCLAW_MVP.md" \
+    "${REPO_ROOT}/docs/TELEGRAM_OPENCLAW_RUNTIME_MVP.md" \
+    "${REPO_ROOT}/docs/OPENCLAW_OPERATOR_FLOWS_MVP.md" \
     "${REPO_ROOT}/docs/AGENT_ZONE_SECURITY_MVP.md" \
     "${REPO_ROOT}/docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md" \
     "${REPO_ROOT}/runbooks/OPENCLAW_DEPLOY_MVP.md" \
     "${REPO_ROOT}/runbooks/OPENCLAW_ROLLBACK_MVP.md" \
-    "${REPO_ROOT}/evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md"
+    "${REPO_ROOT}/evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md" \
+    "${REPO_ROOT}/docs/reports/OPENCLAW_SECURITY_REGRESSION_FIX_2026-04-01.md" \
+    "${REPO_ROOT}/docs/reports/OPENCLAW_PHASE_8_HARDENING_MVP_2026-04-01.md" \
+    "${REPO_ROOT}/docs/reports/OPENCLAW_PHASE_9_TIMEBOXED_HARDENING_2026-04-01.md" \
+    "${REPO_ROOT}/docs/reports/OPENCLAW_PHASE_10_CONSOLE_POLISH_2026-04-01.md" \
+    "${REPO_ROOT}/docs/reports/OPENCLAW_PHASE_11_OPERATOR_FLOWS_2026-04-01.md"
   echo
   print_subsection "ultimos ficheros de evidencia"
   find "${REPO_ROOT}/evidence" -maxdepth 3 -type f -printf '%TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | sort | tail -n 12
@@ -459,9 +565,12 @@ show_openclaw_status() {
   echo
   show_inference_gateway_summary
   echo
+  show_openclaw_telegram_summary
+  echo
   print_subsection "control basico previsto"
   notice_line readonly "status/logs/health visibles en consola"
-  notice_line warning "start/stop/restart no habilitados en este MVP readonly"
+  notice_line info "Telegram runtime visible en una vista dedicada cuando systemd y el runtime lo permiten"
+  notice_line warning "start/stop/restart no habilitados en esta consola MVP"
 }
 
 show_openclaw_logs() {
@@ -531,15 +640,60 @@ show_openclaw_health() {
   show_inference_gateway_summary
 }
 
+show_openclaw_telegram_summary() {
+  local active_state="unknown"
+  local sub_state="unknown"
+  local main_pid="unknown"
+
+  print_subsection "telegram runtime"
+  if command -v systemctl >/dev/null 2>&1; then
+    active_state="$(systemctl is-active "${OPENCLAW_TELEGRAM_SERVICE}" 2>/dev/null || true)"
+    sub_state="$(systemctl show -p SubState --value "${OPENCLAW_TELEGRAM_SERVICE}" 2>/dev/null || true)"
+    main_pid="$(systemctl show -p MainPID --value "${OPENCLAW_TELEGRAM_SERVICE}" 2>/dev/null || true)"
+    kv_line "service" "${OPENCLAW_TELEGRAM_SERVICE}"
+    kv_line "active_state" "${active_state:-unknown}"
+    kv_line "sub_state" "${sub_state:-unknown}"
+    kv_line "main_pid" "${main_pid:-unknown}"
+  else
+    kv_line "systemctl_not_available" "$(badge warning yes)"
+  fi
+  kv_line "runtime_status_path" "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}"
+  kv_line "runtime_status_access" "$(runtime_access_badge "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}")"
+  if [[ ! -r "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" ]] && ! openclaw_readonly_helper_available; then
+    notice_line warning "telegram_runtime_status.json no visible desde esta sesion ni via helper readonly."
+  fi
+  kv_line "commands" "/status /capabilities /audit_tail /execute"
+}
+
+show_openclaw_telegram_runtime() {
+  local helper_output
+  print_header
+  print_section_title "OpenClaw / Telegram runtime"
+  echo
+  show_openclaw_telegram_summary
+  if [[ -r "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" ]]; then
+    echo
+    print_subsection "ultimo estado runtime"
+    sed -n '1,160p' "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" | redact_sensitive_output
+  elif helper_output="$(run_openclaw_readonly_helper telegram_runtime_status 2>/dev/null)"; then
+    echo
+    print_subsection "ultimo estado runtime (via helper readonly)"
+    printf '%s\n' "${helper_output}" | redact_sensitive_output
+  else
+    echo
+    notice_line warning "El estado runtime de Telegram no es legible desde esta sesion."
+  fi
+  echo
+  notice_line readonly "La ejecucion real de comandos sigue ocurriendo via bot, policy y auditoria del broker."
+}
+
 show_openclaw_capabilities() {
+  local cli_output rc=0 helper_output
   print_header
   print_section_title "OpenClaw / capacidades"
   echo
-  if policy_path="$(openclaw_broker_policy_path 2>/dev/null)"; then
-    kv_line "policy_path" "${policy_path}"
-  else
-    kv_line "policy_path" "$(badge warning unavailable)"
-  fi
+  kv_line "policy_source" "$(openclaw_policy_source_display)"
+  kv_line "policy_path" "$(openclaw_policy_path_display)"
   echo
   if ! openclaw_broker_cli_available; then
     notice_line error "CLI del broker no disponible desde esta sesion."
@@ -551,7 +705,22 @@ show_openclaw_capabilities() {
 [MUTATING] restricted: accion mutante o sensible
 EOF
   echo
-  if ! run_openclaw_broker_cli show --format console; then
+  cli_output="$(run_openclaw_broker_cli show --format console 2>&1)" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    printf '%s\n' "${cli_output}" | redact_sensitive_output
+  elif printf '%s' "${cli_output}" | grep -q 'PermissionError:'; then
+    if helper_output="$(run_openclaw_readonly_helper broker_state_console 2>/dev/null)"; then
+      echo
+      notice_line readonly "Usando helper readonly root-owned para leer el runtime real."
+      printf '%s\n' "${helper_output}" | redact_sensitive_output
+    else
+      echo
+      notice_line error "No se pudo leer el estado efectivo del broker desde esta sesion."
+      kv_line "runtime_state" "${OPENCLAW_BROKER_RUNTIME_STATE}"
+      notice_line warning "El estado runtime del broker existe pero no es legible con los permisos actuales."
+    fi
+  else
+    printf '%s\n' "${cli_output}" | redact_sensitive_output
     echo
     notice_line error "No se pudo leer el estado efectivo del broker desde esta sesion."
     notice_line warning "Posible causa: policy no visible o permisos insuficientes."
@@ -559,6 +728,7 @@ EOF
 }
 
 show_openclaw_capabilities_audit() {
+  local cli_output rc=0 helper_output
   print_header
   print_section_title "OpenClaw / auditoria de capacidades"
   echo
@@ -568,9 +738,450 @@ show_openclaw_capabilities_audit() {
   fi
   notice_line readonly "Solo lectura; por Telegram, /audit_tail puede quedar reservado a admin."
   echo
-  if ! run_openclaw_broker_cli audit-tail --lines 20 --format console | redact_sensitive_output; then
+  cli_output="$(run_openclaw_broker_cli audit-tail --lines 20 --format console 2>&1)" || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    printf '%s\n' "${cli_output}" | redact_sensitive_output
+  elif printf '%s' "${cli_output}" | grep -q 'PermissionError:'; then
+    if helper_output="$(run_openclaw_readonly_helper broker_audit_recent 2>/dev/null)"; then
+      notice_line readonly "Usando helper readonly root-owned para leer auditoria reciente."
+      printf '%s\n' "${helper_output}" | redact_sensitive_output
+    else
+      notice_line error "No se pudo leer la auditoria del broker desde esta sesion."
+      kv_line "runtime_state" "${OPENCLAW_BROKER_RUNTIME_STATE}"
+      notice_line warning "La auditoria vive en el runtime del broker y no es legible con los permisos actuales."
+    fi
+  else
+    printf '%s\n' "${cli_output}" | redact_sensitive_output
     notice_line error "No se pudo leer la auditoria del broker desde esta sesion."
   fi
+}
+
+known_action_label() {
+  case "$1" in
+    action.health.general.v1) printf '%s\n' "Health general" ;;
+    action.logs.read.v1) printf '%s\n' "Lectura de logs" ;;
+    action.webhook.trigger.v1) printf '%s\n' "Disparo controlado" ;;
+    action.openclaw.restart.v1) printf '%s\n' "Reinicio OpenClaw" ;;
+    action.dropzone.write.v1) printf '%s\n' "Escritura drop-zone" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+known_action_permission() {
+  case "$1" in
+    action.health.general.v1|action.logs.read.v1) printf '%s\n' "operator.read" ;;
+    action.webhook.trigger.v1) printf '%s\n' "operator.trigger" ;;
+    action.openclaw.restart.v1) printf '%s\n' "operator.control" ;;
+    action.dropzone.write.v1) printf '%s\n' "operator.write" ;;
+    *) printf '%s\n' "unknown" ;;
+  esac
+}
+
+known_action_description() {
+  case "$1" in
+    action.health.general.v1) printf '%s\n' "Health general fijo del boundary OpenClaw/inference-gateway." ;;
+    action.logs.read.v1) printf '%s\n' "Lectura controlada de logs permitidos por stream_id." ;;
+    action.webhook.trigger.v1) printf '%s\n' "Disparo de webhook controlado para operaciones acotadas." ;;
+    action.openclaw.restart.v1) printf '%s\n' "Reservado a control administrativo; sigue siendo la accion mas sensible." ;;
+    action.dropzone.write.v1) printf '%s\n' "Escritura limitada en la drop-zone controlada del broker." ;;
+    *) printf '%s\n' "Accion no catalogada en esta consola." ;;
+  esac
+}
+
+known_action_badge() {
+  case "$1" in
+    action.health.general.v1|action.logs.read.v1) badge readonly "READONLY" ;;
+    action.openclaw.restart.v1) badge warning "CONTROL" ;;
+    *) badge mutating "RESTRICTED" ;;
+  esac
+}
+
+print_known_action_card() {
+  local action_id="$1"
+  printf '%s %s\n' "$(known_action_badge "${action_id}")" "$(known_action_label "${action_id}")"
+  kv_line "action_id" "${action_id}"
+  kv_line "permission" "$(known_action_permission "${action_id}")"
+  kv_line "descripcion" "$(known_action_description "${action_id}")"
+  echo
+}
+
+show_openclaw_action_catalog() {
+  print_header
+  print_section_title "OpenClaw / catalogo de acciones"
+  echo
+  print_subsection "acciones conocidas en el boundary actual"
+  print_known_action_card "action.health.general.v1"
+  print_known_action_card "action.logs.read.v1"
+  print_known_action_card "action.webhook.trigger.v1"
+  print_known_action_card "action.dropzone.write.v1"
+  print_known_action_card "action.openclaw.restart.v1"
+  notice_line info "Las acciones readonly forman parte de la observabilidad base."
+  notice_line warning "Las acciones restricted/control deben abrirse con TTL corto y motivo claro."
+}
+
+show_operational_overview() {
+  local docker_status cli_status helper_status
+  print_header
+  print_section_title "Resumen operativo"
+  echo
+  if docker_available; then
+    docker_status="$(badge success yes)"
+  else
+    docker_status="$(badge warning no)"
+  fi
+  if openclaw_broker_cli_available; then
+    cli_status="$(badge success yes)"
+  else
+    cli_status="$(badge warning no)"
+  fi
+  if openclaw_readonly_helper_available; then
+    helper_status="$(badge success yes)"
+  else
+    helper_status="$(badge warning no)"
+  fi
+  print_subsection "estado ejecutivo"
+  kv_line "host" "$(hostname 2>/dev/null || printf '%s' 'unknown')"
+  kv_line "session_operator" "$(openclaw_operator_identity)"
+  kv_line "docker_access" "${docker_status}"
+  kv_line "broker_cli_available" "${cli_status}"
+  kv_line "readonly_helper" "${helper_status}"
+  kv_line "policy_source" "$(openclaw_policy_source_display)"
+  kv_line "policy_path" "$(openclaw_policy_path_display)"
+  echo
+  print_subsection "servicios clave"
+  kv_line "inference_gateway" "$(service_active_state "${INFERENCE_GATEWAY_SERVICE}") / $(service_sub_state "${INFERENCE_GATEWAY_SERVICE}")"
+  kv_line "telegram_bot" "$(service_active_state "${OPENCLAW_TELEGRAM_SERVICE}") / $(service_sub_state "${OPENCLAW_TELEGRAM_SERVICE}")"
+  kv_line "openclaw_runtime_root" "$([[ -d "${OPENCLAW_RUNTIME_ROOT}" ]] && badge success yes || badge warning no)"
+  kv_line "broker_state_access" "$(runtime_access_badge "${OPENCLAW_BROKER_RUNTIME_STATE}")"
+  kv_line "broker_audit_access" "$(runtime_access_badge "${OPENCLAW_BROKER_AUDIT_LOG}")"
+  kv_line "telegram_runtime_access" "$(runtime_access_badge "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}")"
+  echo
+  print_subsection "superficie funcional"
+  notice_line readonly "Health y logs forman parte de la observabilidad base."
+  notice_line info "Telegram esta integrado como canal operativo corto: /status /capabilities /audit_tail /execute."
+  notice_line mutating "Broker y capacidades permiten mutacion controlada via policy/TTL."
+  if openclaw_readonly_helper_available; then
+    notice_line success "El helper readonly del host esta disponible para leer runtime real sin abrir acceso general."
+  fi
+  echo
+  print_subsection "siguiente comprobacion sugerida"
+  if [[ -r "${OPENCLAW_BROKER_RUNTIME_STATE}" ]] || openclaw_readonly_helper_available; then
+    echo "- Revisar estado efectivo del broker y auditoria."
+  else
+    echo "- Resolver acceso readonly al runtime del broker para ver estado y auditoria real."
+  fi
+  if [[ "$(service_active_state "${OPENCLAW_TELEGRAM_SERVICE}")" == "active" ]] && { [[ -r "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" ]] || openclaw_readonly_helper_available; }; then
+    echo "- Validar Telegram runtime y ultimos eventos si se abre acceso a logs/runtime status."
+  else
+    echo "- Revisar Telegram service antes de habilitar controles mutantes."
+  fi
+}
+
+show_openclaw_runtime_diagnostics() {
+  local cli_status docker_status systemctl_status helper_status
+  print_header
+  print_section_title "OpenClaw / diagnostico operativo"
+  echo
+  if openclaw_broker_cli_available; then
+    cli_status="$(badge success yes)"
+  else
+    cli_status="$(badge warning no)"
+  fi
+  if docker_available; then
+    docker_status="$(badge success yes)"
+  else
+    docker_status="$(badge warning no)"
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl_status="$(badge success yes)"
+  else
+    systemctl_status="$(badge warning no)"
+  fi
+  if openclaw_readonly_helper_available; then
+    helper_status="$(badge success yes)"
+  else
+    helper_status="$(badge warning no)"
+  fi
+  print_subsection "sesion actual"
+  kv_line "operator_id_sugerido" "$(openclaw_operator_identity)"
+  kv_line "broker_cli_available" "${cli_status}"
+  kv_line "docker_access" "${docker_status}"
+  kv_line "systemctl_available" "${systemctl_status}"
+  kv_line "readonly_helper" "${helper_status}"
+  echo
+  print_subsection "runtime y permisos"
+  kv_line "runtime_root" "${OPENCLAW_RUNTIME_ROOT}"
+  kv_line "runtime_root_exists" "$([[ -d "${OPENCLAW_RUNTIME_ROOT}" ]] && badge success yes || badge warning no)"
+  kv_line "compose_readable" "$([[ -r "${OPENCLAW_RUNTIME_COMPOSE}" ]] && badge success yes || badge warning no)"
+  kv_line "policy_runtime_readable" "$([[ -r "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME}" ]] && badge success yes || badge warning no)"
+  kv_line "broker_state_access" "$(runtime_access_badge "${OPENCLAW_BROKER_RUNTIME_STATE}")"
+  kv_line "broker_audit_access" "$(runtime_access_badge "${OPENCLAW_BROKER_AUDIT_LOG}")"
+  kv_line "telegram_runtime_access" "$(runtime_access_badge "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}")"
+  echo
+  print_subsection "servicios"
+  kv_line "inference_gateway" "$(service_active_state "${INFERENCE_GATEWAY_SERVICE}") / pid=$(service_main_pid "${INFERENCE_GATEWAY_SERVICE}")"
+  kv_line "telegram_bot" "$(service_active_state "${OPENCLAW_TELEGRAM_SERVICE}") / pid=$(service_main_pid "${OPENCLAW_TELEGRAM_SERVICE}")"
+  echo
+  print_subsection "degradaciones detectadas"
+  if [[ ! -r "${OPENCLAW_BROKER_RUNTIME_STATE}" ]] && ! openclaw_readonly_helper_available; then
+    notice_line warning "La consola no puede leer el estado vivo del broker con los permisos actuales."
+  fi
+  if [[ ! -r "${OPENCLAW_BROKER_AUDIT_LOG}" ]] && ! openclaw_readonly_helper_available; then
+    notice_line warning "La auditoria real del broker no es legible desde esta sesion."
+  fi
+  if [[ ! -r "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" ]] && ! openclaw_readonly_helper_available; then
+    notice_line warning "telegram_runtime_status.json no es legible; solo se ve el estado systemd."
+  fi
+  if [[ -r "${OPENCLAW_BROKER_RUNTIME_STATE}" && -r "${OPENCLAW_BROKER_AUDIT_LOG}" && -r "${OPENCLAW_TELEGRAM_RUNTIME_STATUS}" ]]; then
+    notice_line success "La sesion tiene visibilidad readonly suficiente sobre runtime y auditoria."
+  elif openclaw_readonly_helper_available; then
+    notice_line success "El helper readonly del host compensa la falta de lectura directa sobre runtime."
+  fi
+}
+
+select_mutating_action_id() {
+  local action_choice custom_action
+  if [[ ! -t 0 ]]; then
+    prompt_optional 'action_id'
+    return 0
+  fi
+  print_subsection "seleccion de accion mutante"
+  menu_line "1" "Disparo controlado" "$(badge mutating "action.webhook.trigger.v1")"
+  menu_line "2" "Escritura drop-zone" "$(badge mutating "action.dropzone.write.v1")"
+  menu_line "3" "Reinicio OpenClaw" "$(badge warning "action.openclaw.restart.v1")"
+  menu_line "8" "Introducir action_id manual"
+  menu_line "9" "Cancelar"
+  printf 'Selecciona una accion: '
+  read -r action_choice
+  case "${action_choice}" in
+    1) printf '%s\n' "action.webhook.trigger.v1" ;;
+    2) printf '%s\n' "action.dropzone.write.v1" ;;
+    3) printf '%s\n' "action.openclaw.restart.v1" ;;
+    8)
+      custom_action="$(prompt_optional 'action_id')"
+      if [[ -z "${custom_action}" ]]; then
+        return 1
+      fi
+      printf '%s\n' "${custom_action}"
+      ;;
+    9) return 1 ;;
+    *)
+      echo "Opcion no valida."
+      return 1
+      ;;
+  esac
+}
+
+security_preset_title() {
+  case "$1" in
+    readonly-strict) printf '%s\n' "Observacion estricta" ;;
+    trigger-window) printf '%s\n' "Disparo controlado" ;;
+    dropzone-window) printf '%s\n' "Escritura temporal" ;;
+    operator-temporal) printf '%s\n' "Operador temporal" ;;
+    admin-window) printf '%s\n' "Admin restringido" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+security_preset_default_ttl() {
+  case "$1" in
+    readonly-strict) printf '%s\n' "" ;;
+    trigger-window) printf '%s\n' "10" ;;
+    dropzone-window) printf '%s\n' "15" ;;
+    operator-temporal) printf '%s\n' "15" ;;
+    admin-window) printf '%s\n' "10" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+security_preset_warning() {
+  case "$1" in
+    readonly-strict)
+      printf '%s\n' "Reduce la superficie mutante a solo observabilidad. No afecta acciones readonly."
+      ;;
+    trigger-window)
+      printf '%s\n' "Abre solo el disparo controlado. Recomendado para ventanas muy cortas."
+      ;;
+    dropzone-window)
+      printf '%s\n' "Abre solo la escritura en drop-zone. Mantiene webhook y restart cerrados."
+      ;;
+    operator-temporal)
+      printf '%s\n' "Abre la operativa habitual de operador con TTL corto. Restart sigue cerrado."
+      ;;
+    admin-window)
+      printf '%s\n' "Abre tambien restart. Usar solo con operador admin y motivo fuerte."
+      ;;
+    *)
+      printf '%s\n' "Preset sin advertencia catalogada."
+      ;;
+  esac
+}
+
+security_preset_plan() {
+  case "$1" in
+    readonly-strict)
+      printf '%s\n' \
+        "disable|action.webhook.trigger.v1" \
+        "disable|action.dropzone.write.v1" \
+        "disable|action.openclaw.restart.v1"
+      ;;
+    trigger-window)
+      printf '%s\n' \
+        "enable_ttl|action.webhook.trigger.v1" \
+        "disable|action.dropzone.write.v1" \
+        "disable|action.openclaw.restart.v1"
+      ;;
+    dropzone-window)
+      printf '%s\n' \
+        "disable|action.webhook.trigger.v1" \
+        "enable_ttl|action.dropzone.write.v1" \
+        "disable|action.openclaw.restart.v1"
+      ;;
+    operator-temporal)
+      printf '%s\n' \
+        "enable_ttl|action.webhook.trigger.v1" \
+        "enable_ttl|action.dropzone.write.v1" \
+        "disable|action.openclaw.restart.v1"
+      ;;
+    admin-window)
+      printf '%s\n' \
+        "enable_ttl|action.webhook.trigger.v1" \
+        "enable_ttl|action.dropzone.write.v1" \
+        "enable_ttl|action.openclaw.restart.v1"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+show_security_presets_catalog() {
+  print_header
+  print_section_title "OpenClaw / seguridad / presets"
+  echo
+  print_subsection "presets disponibles"
+  menu_line "1" "Observacion estricta" "$(badge readonly "LOCKDOWN")"
+  echo "    Solo observabilidad. Deshabilita webhook, drop-zone y restart."
+  menu_line "2" "Disparo controlado" "$(badge mutating "TTL 10m")"
+  echo "    Abre solo action.webhook.trigger.v1 durante una ventana corta."
+  menu_line "3" "Escritura temporal" "$(badge mutating "TTL 15m")"
+  echo "    Abre solo action.dropzone.write.v1 con TTL corto."
+  menu_line "4" "Operador temporal" "$(badge mutating "TTL 15m")"
+  echo "    Abre webhook + drop-zone para operativa habitual; restart sigue cerrado."
+  menu_line "5" "Admin restringido" "$(badge warning "TTL 10m")"
+  echo "    Abre tambien restart. Debe usarlo un operador con permisos admin."
+  echo
+  notice_line warning "Todos los presets mutantes exigen confirmacion explicita y dejan rastro en auditoria."
+}
+
+show_security_preset_preview() {
+  local preset="$1"
+  local operator="$2"
+  local reason="$3"
+  local ttl_minutes="$4"
+  local operation action_id
+
+  print_header
+  print_section_title "OpenClaw / seguridad / previsualizacion"
+  echo
+  kv_line "preset" "$(security_preset_title "${preset}")"
+  kv_line "operator_id" "${operator}"
+  kv_line "reason" "${reason}"
+  if [[ -n "${ttl_minutes}" ]]; then
+    kv_line "ttl_minutes" "${ttl_minutes}"
+  fi
+  echo
+  print_subsection "advertencia"
+  notice_line warning "$(security_preset_warning "${preset}")"
+  echo
+  print_subsection "cambios previstos"
+  while IFS='|' read -r operation action_id; do
+    [[ -z "${operation}" ]] && continue
+    case "${operation}" in
+      enable_ttl)
+        echo "- ENABLE TTL ${ttl_minutes}m :: $(known_action_label "${action_id}") (${action_id})"
+        ;;
+      disable)
+        echo "- DISABLE :: $(known_action_label "${action_id}") (${action_id})"
+        ;;
+    esac
+  done < <(security_preset_plan "${preset}")
+  echo
+  notice_line info "La consola aplicara cada cambio via broker CLI y mostrara el resultado paso a paso."
+}
+
+confirm_security_apply() {
+  local phrase
+  if [[ ! -t 0 ]]; then
+    notice_line warning "Sesion no interactiva: la aplicacion del preset se cancela por seguridad."
+    return 1
+  fi
+  printf 'Escribe APPLY para continuar: '
+  read -r phrase
+  if [[ "${phrase}" != "APPLY" ]]; then
+    notice_line warning "Operacion cancelada; no se aplico ningun cambio."
+    return 1
+  fi
+  return 0
+}
+
+apply_security_preset_flow() {
+  local preset="$1"
+  local operator reason ttl_minutes default_ttl operation action_id failures=0
+  local change_reason
+
+  if ! openclaw_broker_cli_available; then
+    notice_line error "CLI del broker no disponible desde esta sesion."
+    return 1
+  fi
+
+  operator="$(resolve_openclaw_operator_identity)" || return 1
+  default_ttl="$(security_preset_default_ttl "${preset}")"
+  if [[ -n "${default_ttl}" ]]; then
+    ttl_minutes="$(prompt_with_default 'ttl_minutes' "${default_ttl}")"
+    if [[ -z "${ttl_minutes}" ]]; then
+      echo "ttl_minutes requerido."
+      return 1
+    fi
+  else
+    ttl_minutes=""
+  fi
+  reason="$(prompt_with_default 'motivo' "preset_$(printf '%s' "${preset}" | tr '-' '_')")"
+  show_security_preset_preview "${preset}" "${operator}" "${reason}" "${ttl_minutes}"
+  if ! confirm_security_apply; then
+    return 1
+  fi
+
+  while IFS='|' read -r operation action_id; do
+    [[ -z "${operation}" ]] && continue
+    printf '\n'
+    print_subsection "$(known_action_label "${action_id}")"
+    change_reason="${reason}:${preset}"
+    case "${operation}" in
+      enable_ttl)
+        if ! apply_openclaw_capability_change \
+          "$(security_preset_title "${preset}")" \
+          enable --action-id "${action_id}" --ttl-minutes "${ttl_minutes}" --operator-id "${operator}" --reason "${change_reason}"; then
+          failures=$((failures + 1))
+        fi
+        ;;
+      disable)
+        if ! apply_openclaw_capability_change \
+          "$(security_preset_title "${preset}")" \
+          disable --action-id "${action_id}" --operator-id "${operator}" --reason "${change_reason}"; then
+          failures=$((failures + 1))
+        fi
+        ;;
+    esac
+  done < <(security_preset_plan "${preset}")
+
+  printf '\n'
+  if [[ "${failures}" -eq 0 ]]; then
+    notice_line success "Preset aplicado correctamente: $(security_preset_title "${preset}")"
+    return 0
+  fi
+  notice_line warning "Preset aplicado con incidencias: ${failures} cambios no se pudieron completar."
+  return 1
 }
 
 prompt_with_default() {
@@ -624,7 +1235,7 @@ apply_openclaw_capability_change() {
 
 openclaw_capability_enable_flow() {
   local action_id reason operator
-  action_id="$(prompt_optional 'action_id')"
+  action_id="$(select_mutating_action_id)" || return 1
   if [[ -z "${action_id}" ]]; then
     echo "action_id requerido."
     return 1
@@ -637,7 +1248,7 @@ openclaw_capability_enable_flow() {
 
 openclaw_capability_disable_flow() {
   local action_id reason operator
-  action_id="$(prompt_optional 'action_id')"
+  action_id="$(select_mutating_action_id)" || return 1
   if [[ -z "${action_id}" ]]; then
     echo "action_id requerido."
     return 1
@@ -650,7 +1261,7 @@ openclaw_capability_disable_flow() {
 
 openclaw_capability_ttl_flow() {
   local action_id ttl_minutes reason operator
-  action_id="$(prompt_optional 'action_id')"
+  action_id="$(select_mutating_action_id)" || return 1
   if [[ -z "${action_id}" ]]; then
     echo "action_id requerido."
     return 1
@@ -668,7 +1279,7 @@ openclaw_capability_ttl_flow() {
 
 openclaw_capability_reset_one_shot_flow() {
   local action_id reason operator
-  action_id="$(prompt_optional 'action_id')"
+  action_id="$(select_mutating_action_id)" || return 1
   if [[ -z "${action_id}" ]]; then
     echo "action_id requerido."
     return 1
@@ -684,17 +1295,18 @@ show_help() {
   print_section_title "Ayuda / limites del MVP"
   echo
   cat <<'EOF'
-[READONLY] Esta consola es principalmente readonly.
-[MUTATING] El submenu de capacidades mezcla lectura y mutacion controlada.
-- Lectura: ver estado y auditoria.
-- Mutacion: enable/disable/ttl/reset-one-shot, siempre via CLI/policy.
-[WARNING] No reinicia servicios, no toca secretos y no modifica produccion.
-- Si una comprobacion requiere Docker o sudo y no esta disponible, muestra un aviso y sigue.
-- La fuente de verdad operativa actual esta en README.md y evidence/.
-- El inventario funcional minimo de workflows de n8n sigue en estado PARTIAL por acceso readonly limitado al runtime activo.
-- OpenClaw e inference-gateway se presentan en modo readonly usando Docker/systemd/journal si estan disponibles en la sesion.
-- El submenu de capacidades OpenClaw usa la CLI del broker; si no hay permisos suficientes o el operador no esta autorizado, degrada con mensaje claro.
-[WARNING] Start/stop/restart quedan fuera de esta consola MVP.
+[READONLY] La consola prioriza observabilidad, diagnostico y verificacion operativa.
+[MUTATING] La mutacion existe solo en broker/capacidades y seguridad/control.
+- Dashboard inicial para situacion general del host, OpenClaw, broker y Telegram.
+- Menus separados para runtime, broker, seguridad, evidencias y diagnostico.
+- Presets guiados de seguridad con TTL corto, motivo obligatorio y confirmacion explicita.
+[WARNING] No toca secretos ni reinicia servicios directamente desde esta sesion.
+- Si una comprobacion requiere Docker o sudo y no esta disponible, la consola degrada con mensaje claro.
+- Si el helper readonly root-owned esta instalado, la consola puede leer runtime real de broker y Telegram sin acceso general a /opt/automation.
+- Telegram se trata como canal operativo real: status service, runtime status y comandos soportados.
+- Broker y capacidades usan la CLI real del restricted operator; no se inventan acciones fuera de policy.
+- La fuente de verdad operativa sigue siendo runtime + auditoria; la plantilla del repo es fallback declarativo.
+[WARNING] Para acciones sensibles: usar TTL corto, motivo claro y revisar auditoria despues.
 EOF
 }
 
@@ -702,44 +1314,76 @@ show_menu() {
   print_header
   print_section_title "Menu principal"
   echo
-  menu_line "1" "Estado general del host"
-  menu_line "2" "Estado de Docker"
-  menu_line "3" "Estado de n8n"
-  menu_line "4" "Red / listeners / puertos clave"
-  menu_line "5" "Ultimas evidencias / ruta de control-plane"
-  menu_line "6" "Zona de agentes"
-  menu_line "7" "OpenClaw / inference-gateway"
-  menu_line "8" "Ayuda / limites del MVP"
+  menu_line "1" "Resumen operativo"
+  menu_line "2" "OpenClaw y Telegram"
+  menu_line "3" "Broker y capacidades"
+  menu_line "4" "Seguridad y control"
+  menu_line "5" "Evidencias e informes"
+  menu_line "6" "Diagnostico"
+  menu_line "7" "Ayuda / limites del MVP"
   menu_line "9" "Salir"
   echo
-  printf '%s\n' "$(badge readonly "READONLY") inspeccion y observabilidad"
-  printf '%s\n' "$(badge mutating "MUTATING") solo aparece en capacidades OpenClaw"
-}
-
-show_agents_menu() {
-  print_header
-  print_section_title "Zona de agentes"
-  echo
-  menu_line "1" "Resumen de la zona"
-  menu_line "2" "Seguridad y allowlist"
-  menu_line "9" "Volver"
+  printf '%s\n' "$(badge readonly "READONLY") observabilidad, evidencias y diagnostico"
+  printf '%s\n' "$(badge mutating "MUTATING") broker/capacidades y presets de seguridad"
 }
 
 show_openclaw_menu() {
   print_header
-  print_section_title "OpenClaw / inference-gateway"
+  print_section_title "OpenClaw y Telegram"
   echo
-  menu_line "1" "Estado MVP"
-  menu_line "2" "Logs utiles"
-  menu_line "3" "Health"
-  menu_line "4" "Control basico previsto"
-  menu_line "5" "Capacidades OpenClaw" "$(badge mutating "READ + MUTATE")"
+  menu_line "1" "Resumen runtime OpenClaw"
+  menu_line "2" "Telegram runtime"
+  menu_line "3" "Logs utiles"
+  menu_line "4" "Health"
+  menu_line "5" "Catalogo de acciones"
+  menu_line "9" "Volver"
+}
+
+show_broker_menu() {
+  print_header
+  print_section_title "Broker y capacidades"
+  echo
+  menu_line "1" "Estado efectivo"
+  menu_line "2" "Auditoria reciente"
+  menu_line "3" "Catalogo de acciones"
+  menu_line "4" "Control manual por accion" "$(badge mutating "GUIADO")"
+  menu_line "5" "Diagnostico broker/runtime"
+  menu_line "9" "Volver"
+}
+
+show_security_menu() {
+  print_header
+  print_section_title "Seguridad y control"
+  echo
+  menu_line "1" "Ver catalogo de presets" "$(badge readonly "READONLY")"
+  menu_line "2" "Aplicar observacion estricta" "$(badge readonly "LOCKDOWN")"
+  menu_line "3" "Aplicar disparo controlado" "$(badge mutating "TTL 10m")"
+  menu_line "4" "Aplicar escritura temporal" "$(badge mutating "TTL 15m")"
+  menu_line "5" "Aplicar operador temporal" "$(badge mutating "TTL 15m")"
+  menu_line "6" "Aplicar admin restringido" "$(badge warning "TTL 10m")"
+  menu_line "7" "Resetear one-shot manual" "$(badge mutating "MANUAL")"
+  menu_line "8" "Diagnostico broker/runtime" "$(badge readonly "READONLY")"
+  menu_line "9" "Volver"
+}
+
+show_diagnostics_menu() {
+  print_header
+  print_section_title "Diagnostico"
+  echo
+  menu_line "1" "Resumen operativo"
+  menu_line "2" "Estado general del host"
+  menu_line "3" "Estado de Docker"
+  menu_line "4" "Red / listeners / puertos clave"
+  menu_line "5" "Zona de agentes"
+  menu_line "6" "Diagnostico OpenClaw / broker"
+  menu_line "7" "Estado de n8n"
+  menu_line "8" "Evidencias e informes"
   menu_line "9" "Volver"
 }
 
 show_openclaw_capabilities_menu() {
   print_header
-  print_section_title "OpenClaw / capacidades"
+  print_section_title "Broker / control manual"
   echo
   menu_line "1" "Ver estado efectivo" "$(badge readonly "READONLY")"
   menu_line "2" "Habilitar accion" "$(badge mutating "MUTATING")"
@@ -747,20 +1391,18 @@ show_openclaw_capabilities_menu() {
   menu_line "4" "Habilitar accion con TTL" "$(badge mutating "MUTATING")"
   menu_line "5" "Resetear one-shot consumido" "$(badge mutating "MUTATING")"
   menu_line "6" "Ver auditoria reciente" "$(badge readonly "READONLY")"
+  menu_line "7" "Catalogo de acciones" "$(badge readonly "READONLY")"
+  menu_line "8" "Diagnostico broker/runtime" "$(badge readonly "READONLY")"
   menu_line "9" "Volver"
 }
 
-run_agents_section() {
+run_openclaw_section() {
   case "$1" in
-    1|summary) show_agents_zone ;;
-    2|security)
-      print_header
-      print_section_title "Zona de agentes: seguridad y allowlist"
-      printf '\n'
-      sed -n '1,220p' "${REPO_ROOT}/docs/AGENT_ZONE_SECURITY_MVP.md"
-      printf '\n'
-      sed -n '1,220p' "${REPO_ROOT}/docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md"
-      ;;
+    1|status) show_openclaw_status ;;
+    2|telegram) show_openclaw_telegram_runtime ;;
+    3|logs) show_openclaw_logs ;;
+    4|health) show_openclaw_health ;;
+    5|actions) show_openclaw_action_catalog ;;
     9|back) return 1 ;;
     *)
       echo "Opcion no valida: $1" >&2
@@ -769,25 +1411,12 @@ run_agents_section() {
   esac
 }
 
-run_openclaw_section() {
+run_broker_section() {
   case "$1" in
-    1|status) show_openclaw_status ;;
-    2|logs) show_openclaw_logs ;;
-    3|health) show_openclaw_health ;;
-    4|controls)
-      print_header
-      print_section_title "OpenClaw / inference-gateway: control basico previsto"
-      printf '\n'
-      cat <<'EOF'
-[READONLY] status: visible en la consola
-[READONLY] logs: visibles en la consola
-[READONLY] health: visible en la consola
-[READONLY] inference-gateway host: visible en la consola
-[WARNING] start/stop/restart: no habilitados en este MVP readonly
-- despliegue y rollback: definidos en runbooks del control-plane
-EOF
-      ;;
-    5|capabilities)
+    1|show) show_openclaw_capabilities ;;
+    2|audit) show_openclaw_capabilities_audit ;;
+    3|catalog) show_openclaw_action_catalog ;;
+    4|manual)
       while true; do
         show_openclaw_capabilities_menu
         printf 'Selecciona una opcion: '
@@ -799,6 +1428,8 @@ EOF
           4) openclaw_capability_ttl_flow ;;
           5) openclaw_capability_reset_one_shot_flow ;;
           6) show_openclaw_capabilities_audit ;;
+          7) show_openclaw_action_catalog ;;
+          8) show_openclaw_runtime_diagnostics ;;
           9) break ;;
           *)
             echo "Opcion no valida: ${openclaw_cap_choice}" >&2
@@ -807,6 +1438,43 @@ EOF
         pause_if_interactive
       done
       ;;
+    5|diag) show_openclaw_runtime_diagnostics ;;
+    9|back) return 1 ;;
+    *)
+      echo "Opcion no valida: $1" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_security_section() {
+  case "$1" in
+    1|catalog) show_security_presets_catalog ;;
+    2|readonly-strict) apply_security_preset_flow "readonly-strict" ;;
+    3|trigger-window) apply_security_preset_flow "trigger-window" ;;
+    4|dropzone-window) apply_security_preset_flow "dropzone-window" ;;
+    5|operator-temporal) apply_security_preset_flow "operator-temporal" ;;
+    6|admin-window) apply_security_preset_flow "admin-window" ;;
+    7|reset-one-shot) openclaw_capability_reset_one_shot_flow ;;
+    8|diag) show_openclaw_runtime_diagnostics ;;
+    9|back) return 1 ;;
+    *)
+      echo "Opcion no valida: $1" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_diagnostics_section() {
+  case "$1" in
+    1|overview) show_operational_overview ;;
+    2|host) show_host_status ;;
+    3|docker) show_docker_status ;;
+    4|network|ports) show_network_status ;;
+    5|agents) show_agents_zone ;;
+    6|openclaw) show_openclaw_runtime_diagnostics ;;
+    7|n8n) show_n8n_status ;;
+    8|evidence) show_evidence_paths ;;
     9|back) return 1 ;;
     *)
       echo "Opcion no valida: $1" >&2
@@ -817,16 +1485,22 @@ EOF
 
 run_section() {
   case "$1" in
-    1|host) show_host_status ;;
-    2|docker) show_docker_status ;;
-    3|n8n) show_n8n_status ;;
-    4|network|ports) show_network_status ;;
+    1|overview|summary) show_operational_overview ;;
+    2|openclaw) show_openclaw_status ;;
+    3|broker|openclaw-broker) show_openclaw_capabilities ;;
+    4|security|openclaw-security) show_security_presets_catalog ;;
     5|evidence) show_evidence_paths ;;
-    6|agents) show_agents_zone ;;
-    7|openclaw) show_openclaw_status ;;
+    6|diagnostics|openclaw-diagnostics) show_openclaw_runtime_diagnostics ;;
+    7|help) show_help ;;
+    host) show_host_status ;;
+    docker) show_docker_status ;;
+    n8n) show_n8n_status ;;
+    network|ports) show_network_status ;;
+    agents) show_agents_zone ;;
+    openclaw-telegram) show_openclaw_telegram_runtime ;;
     openclaw-capabilities) show_openclaw_capabilities ;;
     openclaw-capabilities-audit) show_openclaw_capabilities_audit ;;
-    8|help) show_help ;;
+    openclaw-actions) show_openclaw_action_catalog ;;
     openclaw-logs) show_openclaw_logs ;;
     openclaw-health) show_openclaw_health ;;
     9|exit) exit 0 ;;
@@ -849,18 +1523,7 @@ while true; do
   printf 'Selecciona una opcion: '
   read -r choice
   case "${choice}" in
-    6)
-      while true; do
-        show_agents_menu
-        printf 'Selecciona una opcion: '
-        read -r agents_choice
-        if ! run_agents_section "${agents_choice}"; then
-          break
-        fi
-        pause_if_interactive
-      done
-      ;;
-    7)
+    2)
       while true; do
         show_openclaw_menu
         printf 'Selecciona una opcion: '
@@ -870,6 +1533,43 @@ while true; do
         fi
         pause_if_interactive
       done
+      ;;
+    3)
+      while true; do
+        show_broker_menu
+        printf 'Selecciona una opcion: '
+        read -r broker_choice
+        if ! run_broker_section "${broker_choice}"; then
+          break
+        fi
+        pause_if_interactive
+      done
+      ;;
+    4)
+      while true; do
+        show_security_menu
+        printf 'Selecciona una opcion: '
+        read -r security_choice
+        if ! run_security_section "${security_choice}"; then
+          break
+        fi
+        pause_if_interactive
+      done
+      ;;
+    6)
+      while true; do
+        show_diagnostics_menu
+        printf 'Selecciona una opcion: '
+        read -r diagnostics_choice
+        if ! run_diagnostics_section "${diagnostics_choice}"; then
+          break
+        fi
+        pause_if_interactive
+      done
+      ;;
+    7)
+      show_help
+      pause_if_interactive
       ;;
     9)
       echo "Saliendo."

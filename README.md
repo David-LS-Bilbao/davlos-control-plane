@@ -44,6 +44,9 @@ Hechos confirmados en la documentación operativa actual:
 Checkpoint actual:
 
 - despliegue MVP local ejecutado y validado en host
+- broker restringido operativo en host con policy viva y auditoría
+- canal Telegram privado operativo como runtime persistente
+- helper readonly host-side instalado para inspección segura de broker y Telegram desde consola
 - runtime materializado en host bajo:
   - `/opt/automation/agents/openclaw`
   - `/etc/davlos/secrets/openclaw`
@@ -66,17 +69,25 @@ Checkpoint actual:
   - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
   - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
   - `templates/openclaw/openclaw.json.example`
-- observabilidad readonly integrada en consola:
+- operación integrada actual en consola:
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh overview`
   - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-health`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-logs`
-- todavía no existe en este baseline:
-  - broker restringido
-  - menú final de control con acciones de escritura
-  - integración Telegram
-  - chat operativo final
-  - acciones A/B/C/D
-  - allowlist real de egress aplicada en runtime
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-capabilities`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-capabilities-audit`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-telegram`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-diagnostics`
+- helper readonly host-side para visibilidad runtime:
+  - `/usr/local/sbin/davlos-openclaw-readonly`
+  - `/etc/sudoers.d/davlos-openclaw-readonly`
+- superficie operativa actual:
+  - dashboard de consola con estado de host, broker, Telegram y runtime
+  - control guiado de capacidades con TTL y reset one-shot
+  - presets de seguridad en consola
+  - Telegram como canal corto de consulta y ejecución cerrada
+- límites que siguen vigentes:
+  - no hay UI web final de control; la operación principal sigue en consola + Telegram
+  - start/stop/restart no se exponen directamente desde la consola
+  - el hardening final de egress no se declara cerrado en este README
 
 ## Documentos clave
 
@@ -93,9 +104,13 @@ Checkpoint actual:
 - `runbooks/OPENCLAW_DEPLOY_MVP.md`
 - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
 - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
+- `docs/CONSOLE_OPENCLAW_CAPABILITIES_MVP.md`
+- `docs/OPENCLAW_OPERATOR_FLOWS_MVP.md`
+- `docs/TELEGRAM_OPENCLAW_RUNTIME_FINAL.md`
+- `docs/OPENCLAW_READONLY_HELPER_INSTALL.md`
 
 Nota:
-Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: MVP local desplegado, aislado y observable en modo readonly, pero todavía sin capa final de control restringido ni hardening completo de egress.
+Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: boundary operativo con `inference-gateway`, broker restringido con policy viva y auditoría, Telegram persistente como canal corto y helper readonly host-side para inspección segura desde consola. El hardening final de egress sigue documentado por fases y no se declara cerrado en este `README`.
 
 ## Regla base
 

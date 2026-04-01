@@ -11,6 +11,8 @@ Queda instalado como servicio `systemd`:
 - unit: `/etc/systemd/system/openclaw-telegram-bot.service`
 - env runtime: `/etc/davlos/secrets/openclaw/telegram-bot.env`
 - policy viva: `/opt/automation/agents/openclaw/broker/restricted_operator_policy.json`
+- helper readonly host-side: `/usr/local/sbin/davlos-openclaw-readonly`
+- sudoers mínimo del helper: `/etc/sudoers.d/davlos-openclaw-readonly`
 
 El modelo de seguridad no cambia:
 
@@ -97,6 +99,21 @@ cat /opt/automation/agents/openclaw/broker/state/telegram_runtime_status.json
 tail -n 20 /opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl
 ```
 
+### observabilidad recomendada desde consola
+
+```bash
+bash /opt/control-plane/scripts/console/davlos-vpn-console.sh overview
+bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-telegram
+bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-capabilities-audit
+bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-diagnostics
+```
+
+Si la sesión `devops` no puede leer directamente `/opt/automation/agents/openclaw/broker/state`, la consola usa el helper readonly para:
+
+- `telegram_runtime_status.json`
+- auditoría reciente del broker
+- estado efectivo de capacidades
+
 ## validación final esperada
 
 Comandos ya validados en Telegram:
@@ -142,3 +159,4 @@ Rollback lógico adicional, si hiciera falta:
 - el secreto vive solo en runtime host-side
 - la separación de permisos depende de `operator_auth` y de la policy viva
 - no se han añadido nuevas acciones ni nuevos canales
+- la observabilidad detallada sin root depende del helper readonly o de permisos equivalentes de lectura
