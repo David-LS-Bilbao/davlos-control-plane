@@ -20,6 +20,7 @@ from broker import RestrictedOperatorBroker  # noqa: E402
 import cli as broker_cli  # noqa: E402
 from models import BrokerRequest  # noqa: E402
 from policy import PolicyStore  # noqa: E402
+from telegram_bot import TelegramCommandProcessor  # noqa: E402
 
 
 class _OkHandler(BaseHTTPRequestHandler):
@@ -35,6 +36,14 @@ class _OkHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         return
+
+
+class _FakeTelegramClient:
+    def __init__(self) -> None:
+        self.sent_messages: list[tuple[str, str]] = []
+
+    def send_message(self, *, chat_id: str, text: str) -> None:
+        self.sent_messages.append((chat_id, text))
 
 
 class BrokerTests(unittest.TestCase):
@@ -67,17 +76,17 @@ class BrokerTests(unittest.TestCase):
                         "max_write_bytes": 128,
                     },
                     "actions": {
-                        "action.health.general.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "read", "description": ""},
-                        "action.logs.read.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "read", "description": ""},
-                        "action.webhook.trigger.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": True, "reason": "test", "updated_by": "test", "permission": "trigger", "description": ""},
-                        "action.openclaw.restart.v1": {"enabled": False, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "control", "description": ""},
-                        "action.dropzone.write.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "write", "description": ""}
+                        "action.health.general.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "operator.read", "description": ""},
+                        "action.logs.read.v1": {"enabled": True, "mode": "readonly", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "operator.read", "description": ""},
+                        "action.webhook.trigger.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": True, "reason": "test", "updated_by": "test", "permission": "operator.trigger", "description": ""},
+                        "action.openclaw.restart.v1": {"enabled": False, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "operator.control", "description": ""},
+                        "action.dropzone.write.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "operator.write", "description": ""}
                     },
                     "operator_auth": {
                         "roles": {
-                            "viewer": ["policy.read"],
-                            "operator": ["policy.read", "policy.mutate"],
-                            "admin": ["policy.read", "policy.mutate"],
+                            "viewer": ["policy.read", "operator.read"],
+                            "operator": ["policy.read", "policy.mutate", "operator.read", "operator.trigger", "operator.write"],
+                            "admin": ["policy.read", "policy.mutate", "operator.read", "operator.trigger", "operator.write", "operator.control"],
                         },
                         "operators": {
                             "authorized-operator": {
@@ -93,6 +102,29 @@ class BrokerTests(unittest.TestCase):
                                 "reason": "test_viewer",
                             },
                         },
+                    },
+                    "telegram": {
+                        "enabled": True,
+                        "bot_token_env": "OPENCLAW_TELEGRAM_BOT_TOKEN",
+                        "api_base_url": "https://api.telegram.org",
+                        "poll_timeout_seconds": 1,
+                        "audit_tail_lines": 5,
+                        "offset_store_path": str(self.root / "state" / "telegram_offset.json"),
+                        "allowed_chats": {
+                            "1001": {
+                                "operator_id": "authorized-operator",
+                                "enabled": True,
+                                "display_name": "Authorized Chat",
+                                "reason": "test",
+                            },
+                            "2002": {
+                                "operator_id": "readonly-viewer",
+                                "enabled": True,
+                                "display_name": "Readonly Chat",
+                                "reason": "test",
+                            }
+                        },
+                        "allowed_users": {}
                     },
                     "health_checks": {
                         "local_ok": {"url": f"{self.base_url}/healthz", "expect_status": 200}
@@ -114,6 +146,8 @@ class BrokerTests(unittest.TestCase):
             )
         )
         self.broker = RestrictedOperatorBroker(str(self.policy_path))
+        self.telegram_client = _FakeTelegramClient()
+        self.telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client)
 
     def tearDown(self) -> None:
         self.httpd.shutdown()
@@ -284,6 +318,32 @@ class BrokerTests(unittest.TestCase):
         effective = store.get_effective_action_state("action.dropzone.write.v1")
         self.assertIsNotNone(effective)
         self.assertIsNone(effective.expires_at)
+
+    def test_telegram_status_for_authorized_chat(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="/status")
+        self.assertIn("actions_total=", reply)
+        self.assertIn("operator=authorized-operator", reply)
+
+    def test_telegram_rejects_unauthorized_chat(self) -> None:
+        reply = self.telegram.handle_text(chat_id="9999", user_id="42", text="/status")
+        self.assertEqual(reply, "Chat no autorizado para este bot.")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("telegram_command_rejected_unauthorized_chat", audit_events)
+
+    def test_telegram_execute_health_for_authorized_operator(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="/execute action.health.general.v1")
+        self.assertIn('"ok": true', reply.lower())
+        self.assertIn("action.health.general.v1", reply)
+
+    def test_telegram_execute_rejected_for_viewer_on_write_action(self) -> None:
+        reply = self.telegram.handle_text(
+            chat_id="2002",
+            user_id="42",
+            text="/execute action.dropzone.write.v1 filename=note.txt content=hello",
+        )
+        self.assertEqual(reply, "Operador no autorizado para action.dropzone.write.v1.")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("telegram_command_rejected_operator_not_authorized", audit_events)
 
 
 if __name__ == "__main__":

@@ -63,15 +63,23 @@
   "operator_auth": {
     "roles": {
       "viewer": [
-        "policy.read"
+        "policy.read",
+        "operator.read"
       ],
       "operator": [
         "policy.read",
-        "policy.mutate"
+        "policy.mutate",
+        "operator.read",
+        "operator.trigger",
+        "operator.write"
       ],
       "admin": [
         "policy.read",
-        "policy.mutate"
+        "policy.mutate",
+        "operator.read",
+        "operator.trigger",
+        "operator.write",
+        "operator.control"
       ]
     },
     "operators": {
@@ -92,6 +100,30 @@
         "enabled": true,
         "display_name": "DAVLOS readonly viewer",
         "reason": "readonly_inspection"
+      }
+    }
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token_env": "OPENCLAW_TELEGRAM_BOT_TOKEN",
+    "api_base_url": "https://api.telegram.org",
+    "poll_timeout_seconds": 20,
+    "audit_tail_lines": 10,
+    "offset_store_path": "/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+    "allowed_chats": {
+      "123456789": {
+        "operator_id": "davlos-operator",
+        "enabled": true,
+        "display_name": "Primary private operator chat",
+        "reason": "replace_with_real_private_chat_id"
+      }
+    },
+    "allowed_users": {
+      "987654321": {
+        "operator_id": "davlos-viewer",
+        "enabled": false,
+        "display_name": "Optional readonly fallback user",
+        "reason": "replace_or_remove"
       }
     }
   },

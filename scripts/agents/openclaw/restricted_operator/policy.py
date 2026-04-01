@@ -12,6 +12,8 @@ from models import (
     LogStreamConfig,
     OperatorAuthConfig,
     OperatorRecord,
+    TelegramConfig,
+    TelegramPrincipalRecord,
     WebhookTargetConfig,
 )
 
@@ -21,9 +23,16 @@ class PolicyError(ValueError):
 
 
 DEFAULT_ROLE_PERMISSIONS = {
-    "viewer": ["policy.read"],
-    "operator": ["policy.read", "policy.mutate"],
-    "admin": ["policy.read", "policy.mutate"],
+    "viewer": ["policy.read", "operator.read"],
+    "operator": ["policy.read", "policy.mutate", "operator.read", "operator.trigger", "operator.write"],
+    "admin": [
+        "policy.read",
+        "policy.mutate",
+        "operator.read",
+        "operator.trigger",
+        "operator.write",
+        "operator.control",
+    ],
 }
 
 
@@ -52,6 +61,7 @@ class PolicyStore:
         self.webhook_targets = self._load_webhook_targets(self.raw.get("webhook_targets", {}))
         self.health_checks = self._load_health_checks(self.raw.get("health_checks", {}))
         self.operator_auth = self._load_operator_auth(self.raw.get("operator_auth", {}))
+        self.telegram = self._load_telegram(self.raw.get("telegram", {}))
         self.state_store_path = Path(self.broker.state_store_path)
         self.runtime_state = self._load_runtime_state(self.state_store_path)
 
@@ -173,6 +183,63 @@ class PolicyStore:
         return OperatorAuthConfig(roles=roles, operators=operators)
 
     @staticmethod
+    def _load_telegram_principals(payload: dict, field_name: str) -> dict[str, TelegramPrincipalRecord]:
+        if not isinstance(payload, dict):
+            raise PolicyError(f"{field_name} must be an object")
+        principals: dict[str, TelegramPrincipalRecord] = {}
+        for principal_id, item in payload.items():
+            if not isinstance(item, dict):
+                raise PolicyError(f"invalid telegram principal record: {field_name}.{principal_id}")
+            operator_id = item.get("operator_id")
+            if not isinstance(operator_id, str) or not operator_id:
+                raise PolicyError(f"missing operator_id for {field_name}.{principal_id}")
+            principals[str(principal_id)] = TelegramPrincipalRecord(
+                principal_id=str(principal_id),
+                operator_id=operator_id,
+                enabled=bool(item.get("enabled", True)),
+                display_name=str(item["display_name"]) if item.get("display_name") is not None else None,
+                reason=str(item["reason"]) if item.get("reason") is not None else None,
+            )
+        return principals
+
+    @staticmethod
+    def _load_telegram(payload: dict) -> TelegramConfig:
+        if not payload:
+            return TelegramConfig(
+                enabled=False,
+                bot_token_env="OPENCLAW_TELEGRAM_BOT_TOKEN",
+                api_base_url="https://api.telegram.org",
+                poll_timeout_seconds=20,
+                audit_tail_lines=10,
+                offset_store_path="/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+                allowed_chats={},
+                allowed_users={},
+            )
+        if not isinstance(payload, dict):
+            raise PolicyError("telegram must be an object")
+        return TelegramConfig(
+            enabled=bool(payload.get("enabled", False)),
+            bot_token_env=str(payload.get("bot_token_env", "OPENCLAW_TELEGRAM_BOT_TOKEN")),
+            api_base_url=str(payload.get("api_base_url", "https://api.telegram.org")),
+            poll_timeout_seconds=int(payload.get("poll_timeout_seconds", 20)),
+            audit_tail_lines=int(payload.get("audit_tail_lines", 10)),
+            offset_store_path=str(
+                payload.get(
+                    "offset_store_path",
+                    "/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+                )
+            ),
+            allowed_chats=PolicyStore._load_telegram_principals(
+                payload.get("allowed_chats", {}),
+                "telegram.allowed_chats",
+            ),
+            allowed_users=PolicyStore._load_telegram_principals(
+                payload.get("allowed_users", {}),
+                "telegram.allowed_users",
+            ),
+        )
+
+    @staticmethod
     def _load_runtime_state(path: Path) -> dict[str, dict]:
         if not path.exists():
             return {}
@@ -256,6 +323,22 @@ class PolicyStore:
         if permission not in granted_permissions:
             raise PolicyError(f"operator lacks permission {permission}: {operator_id}")
         return operator
+
+    def resolve_telegram_operator(
+        self,
+        *,
+        chat_id: str | None,
+        user_id: str | None,
+    ) -> tuple[TelegramPrincipalRecord | None, str | None]:
+        if chat_id:
+            chat_record = self.telegram.allowed_chats.get(chat_id)
+            if chat_record is not None and chat_record.enabled:
+                return chat_record, chat_record.operator_id
+        if user_id:
+            user_record = self.telegram.allowed_users.get(user_id)
+            if user_record is not None and user_record.enabled:
+                return user_record, user_record.operator_id
+        return None, None
 
     def consume_one_shot(
         self,

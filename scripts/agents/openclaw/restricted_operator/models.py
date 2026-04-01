@@ -66,6 +66,27 @@ class OperatorAuthConfig:
     operators: dict[str, OperatorRecord]
 
 
+@dataclass(frozen=True)
+class TelegramPrincipalRecord:
+    principal_id: str
+    operator_id: str
+    enabled: bool
+    display_name: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class TelegramConfig:
+    enabled: bool
+    bot_token_env: str
+    api_base_url: str
+    poll_timeout_seconds: int
+    audit_tail_lines: int
+    offset_store_path: str
+    allowed_chats: dict[str, TelegramPrincipalRecord]
+    allowed_users: dict[str, TelegramPrincipalRecord]
+
+
 @dataclass
 class BrokerRequest:
     action_id: str
