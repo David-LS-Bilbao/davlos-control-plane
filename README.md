@@ -10,16 +10,17 @@ Fuente de verdad operativa del VPS DAVLOS.
 - Fase 4 abierta y en pausa operativa.
 - La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
-- OpenClaw MVP local desplegado y validado documentalmente en esta rama.
+- OpenClaw ya no está solo en baseline MVP: el boundary opera en host con `inference-gateway`, broker restringido, Telegram persistente y helper readonly.
+- La DAVLOS VPN Console ya actúa como CLI operativo del boundary con dashboard, broker/capacidades, seguridad guiada y diagnóstico.
 
 ## Objetivo actual
 
 Prioridad operativa vigente:
 
-1. mantener el estado estable actual de `n8n`
-2. consolidar trazabilidad mínima de Fase 4
-3. fijar baseline técnico y documental de `OpenClaw` e `inference-gateway`
-4. revalidar tooling readonly antes de cualquier siguiente cambio
+1. mantener estable el runtime actual de `n8n` y `OpenClaw`
+2. consolidar la operación real de consola, broker y Telegram sin abrir superficie innecesaria
+3. mantener el helper readonly y el control restringido como baseline seguro del boundary
+4. cerrar la documentación viva contra el estado real antes de integrar la rama en `main`
 5. mantener Fase 4 en pausa hasta nueva decisión operativa
 
 ## Estado de n8n
@@ -81,9 +82,10 @@ Checkpoint actual:
   - `/etc/sudoers.d/davlos-openclaw-readonly`
 - superficie operativa actual:
   - dashboard de consola con estado de host, broker, Telegram y runtime
+  - consola reorganizada por runtime, broker, seguridad, evidencias y diagnóstico
   - control guiado de capacidades con TTL y reset one-shot
   - presets de seguridad en consola
-  - Telegram como canal corto de consulta y ejecución cerrada
+  - Telegram como canal corto de consulta, ejecución cerrada y modo conversacional controlado
 - límites que siguen vigentes:
   - no hay UI web final de control; la operación principal sigue en consola + Telegram
   - start/stop/restart no se exponen directamente desde la consola
@@ -105,8 +107,10 @@ Checkpoint actual:
 - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
 - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
 - `docs/CONSOLE_OPENCLAW_CAPABILITIES_MVP.md`
+- `docs/DAVLOS_VPN_CONSOLE_PRESENTATION_MVP.md`
 - `docs/OPENCLAW_OPERATOR_FLOWS_MVP.md`
 - `docs/TELEGRAM_OPENCLAW_RUNTIME_FINAL.md`
+- `docs/TELEGRAM_OPENCLAW_CONVERSATIONAL_MVP.md`
 - `docs/OPENCLAW_READONLY_HELPER_INSTALL.md`
 
 Nota:
