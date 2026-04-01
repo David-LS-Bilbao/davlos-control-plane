@@ -17,13 +17,104 @@ OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO="${REPO_ROOT}/templates/openclaw/restri
 OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME="${OPENCLAW_RUNTIME_ROOT}/broker/restricted_operator_policy.json"
 OPENCLAW_OPERATOR_SESSION_ID="${DAVLOS_OPERATOR_ID:-}"
 
+COLOR_RESET=""
+COLOR_DIM=""
+COLOR_BOLD=""
+COLOR_BLUE=""
+COLOR_CYAN=""
+COLOR_GREEN=""
+COLOR_YELLOW=""
+COLOR_RED=""
+COLOR_MAGENTA=""
+COLOR_WHITE=""
+
+init_console_style() {
+  if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
+    COLOR_RESET=$'\033[0m'
+    COLOR_DIM=$'\033[2m'
+    COLOR_BOLD=$'\033[1m'
+    COLOR_BLUE=$'\033[34m'
+    COLOR_CYAN=$'\033[36m'
+    COLOR_GREEN=$'\033[32m'
+    COLOR_YELLOW=$'\033[33m'
+    COLOR_RED=$'\033[31m'
+    COLOR_MAGENTA=$'\033[35m'
+    COLOR_WHITE=$'\033[37m'
+  fi
+}
+
+style_text() {
+  local style="$1"
+  local text="$2"
+  printf '%b%s%b' "${style}" "${text}" "${COLOR_RESET}"
+}
+
+badge() {
+  local kind="$1"
+  local label="$2"
+  local color="${COLOR_WHITE}"
+  case "${kind}" in
+    readonly) color="${COLOR_CYAN}" ;;
+    mutating) color="${COLOR_MAGENTA}" ;;
+    success) color="${COLOR_GREEN}" ;;
+    warning) color="${COLOR_YELLOW}" ;;
+    error) color="${COLOR_RED}" ;;
+    info) color="${COLOR_BLUE}" ;;
+  esac
+  printf '%b[%s]%b' "${COLOR_BOLD}${color}" "${label}" "${COLOR_RESET}"
+}
+
+rule() {
+  printf '%s\n' '================================================================'
+}
+
+subrule() {
+  printf '%s\n' '----------------------------------------------------------------'
+}
+
+brand_block() {
+  printf '%b\n' "${COLOR_BOLD}${COLOR_BLUE}DAVLOS CONTROL-PLANE${COLOR_RESET}"
+  printf '%b\n' "${COLOR_BOLD}VPN Console MVP${COLOR_RESET}"
+}
+
+print_section_title() {
+  printf '%b%s%b\n' "${COLOR_BOLD}${COLOR_WHITE}" "$1" "${COLOR_RESET}"
+}
+
+print_subsection() {
+  printf '%b%s%b\n' "${COLOR_DIM}${COLOR_CYAN}" "-- $1 --" "${COLOR_RESET}"
+}
+
+kv_line() {
+  local key="$1"
+  local value="$2"
+  printf '  %-24s %s\n' "${key}" "${value}"
+}
+
+menu_line() {
+  local id="$1"
+  local label="$2"
+  local marker="${3:-}"
+  if [[ -n "${marker}" ]]; then
+    printf ' %s %-2s %s\n' "$(style_text "${COLOR_BOLD}${COLOR_BLUE}" "${id})")" "" "${label} ${marker}"
+  else
+    printf ' %s %-2s %s\n' "$(style_text "${COLOR_BOLD}${COLOR_BLUE}" "${id})")" "" "${label}"
+  fi
+}
+
+notice_line() {
+  local kind="$1"
+  shift
+  printf '%s %s\n' "$(badge "${kind}" "$(printf '%s' "${kind}" | tr '[:lower:]' '[:upper:]')")" "$*"
+}
+
 print_header() {
   printf '\n'
-  printf '========================================\n'
-  printf '        DAVLOS VPN Console MVP          \n'
-  printf '========================================\n'
-  printf 'repo=%s\n' "${REPO_ROOT}"
-  printf 'timestamp=%s\n' "$(date -u +%FT%TZ)"
+  rule
+  brand_block
+  subrule
+  kv_line "repo" "${REPO_ROOT}"
+  kv_line "timestamp" "$(date -u +%FT%TZ)"
   printf '\n'
 }
 
@@ -146,37 +237,37 @@ show_inference_gateway_summary() {
   local main_pid="unknown"
   local healthz
 
-  echo "-- inference-gateway host --"
+  print_subsection "inference-gateway host"
   if command -v systemctl >/dev/null 2>&1; then
     active_state="$(systemctl is-active "${INFERENCE_GATEWAY_SERVICE}" 2>/dev/null || true)"
     sub_state="$(systemctl show -p SubState --value "${INFERENCE_GATEWAY_SERVICE}" 2>/dev/null || true)"
     main_pid="$(systemctl show -p MainPID --value "${INFERENCE_GATEWAY_SERVICE}" 2>/dev/null || true)"
-    echo "service=${INFERENCE_GATEWAY_SERVICE}"
-    echo "active_state=${active_state:-unknown}"
-    echo "sub_state=${sub_state:-unknown}"
-    echo "main_pid=${main_pid:-unknown}"
+    kv_line "service" "${INFERENCE_GATEWAY_SERVICE}"
+    kv_line "active_state" "${active_state:-unknown}"
+    kv_line "sub_state" "${sub_state:-unknown}"
+    kv_line "main_pid" "${main_pid:-unknown}"
   else
-    echo "systemctl_not_available=yes"
+    kv_line "systemctl_not_available" "$(badge warning yes)"
   fi
 
-  echo "host_endpoint_local=${INFERENCE_GATEWAY_LOCAL_ENDPOINT}"
-  echo "agents_net_endpoint=${INFERENCE_GATEWAY_AGENTS_ENDPOINT}"
-  echo "ollama_upstream=${OLLAMA_LOCAL_ENDPOINT}"
+  kv_line "host_endpoint_local" "${INFERENCE_GATEWAY_LOCAL_ENDPOINT}"
+  kv_line "agents_net_endpoint" "${INFERENCE_GATEWAY_AGENTS_ENDPOINT}"
+  kv_line "ollama_upstream" "${OLLAMA_LOCAL_ENDPOINT}"
 
   healthz="$(curl -fsS "${INFERENCE_GATEWAY_LOCAL_ENDPOINT}/healthz" 2>/dev/null || true)"
   if [[ -n "${healthz}" ]]; then
-    echo "healthz=${healthz}"
+    kv_line "healthz" "${healthz}"
   else
-    echo "healthz=unavailable_from_this_session"
+    kv_line "healthz" "$(badge warning unavailable_from_this_session)"
   fi
 }
 
 show_inference_gateway_logs() {
   local journal_output
 
-  echo "-- ${INFERENCE_GATEWAY_SERVICE} --"
+  print_subsection "${INFERENCE_GATEWAY_SERVICE}"
   if ! command -v journalctl >/dev/null 2>&1; then
-    echo "journalctl no disponible en esta sesión."
+    notice_line warning "journalctl no disponible en esta sesion."
     return 0
   fi
 
@@ -184,43 +275,43 @@ show_inference_gateway_logs() {
   if [[ -n "$(printf '%s' "${journal_output}" | tr -d '[:space:]')" ]]; then
     printf '%s\n' "${journal_output}" | redact_sensitive_output
   else
-    echo "Sin entradas de journal visibles desde esta sesión."
+    notice_line warning "Sin entradas de journal visibles desde esta sesion."
   fi
 }
 
 show_host_status() {
   print_header
-  echo "[Estado general del host]"
+  print_section_title "Estado general del host"
   echo
-  echo "-- hostnamectl --"
+  print_subsection "identidad del host"
   if ! safe_run hostnamectl; then
-    echo "hostnamectl no disponible; usando uname."
+    notice_line warning "hostnamectl no disponible; usando uname."
     uname -a
   fi
   echo
-  echo "-- uptime --"
+  print_subsection "uptime"
   uptime || true
   echo
-  echo "-- disk --"
+  print_subsection "disco"
   df -h / /opt 2>/dev/null || df -h / 2>/dev/null || true
 }
 
 show_docker_status() {
   print_header
-  echo "[Estado de Docker]"
+  print_section_title "Estado de Docker"
   echo
   if docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' >/tmp/davlos_console_docker_ps.txt 2>/tmp/davlos_console_docker_ps.err; then
     cat /tmp/davlos_console_docker_ps.txt
   else
-    echo "Acceso directo a Docker no disponible desde esta sesión."
+    notice_line warning "Acceso directo a Docker no disponible desde esta sesion."
     if sudo -n /usr/local/sbin/davlos-n8n-audit-readonly docker_readonly >/tmp/davlos_console_docker_readonly.txt 2>/tmp/davlos_console_docker_readonly.err; then
       echo
-      echo "Wrapper readonly de host disponible."
-      echo "Nota: este wrapper sigue siendo legado y no debe usarse como fuente final si difiere del runtime documentado."
+      notice_line readonly "Wrapper readonly de host disponible."
+      notice_line warning "Sigue siendo legado; no usarlo como fuente final si difiere del runtime documentado."
       echo
       sed -n '1,40p' /tmp/davlos_console_docker_readonly.txt
     else
-      echo "Tampoco hay wrapper readonly utilizable para Docker/n8n en esta sesión."
+      notice_line error "Tampoco hay wrapper readonly utilizable para Docker/n8n en esta sesion."
       cat /tmp/davlos_console_docker_ps.err 2>/dev/null || true
       cat /tmp/davlos_console_docker_readonly.err 2>/dev/null || true
     fi
@@ -229,39 +320,39 @@ show_docker_status() {
 
 show_n8n_status() {
   print_header
-  echo "[Estado de n8n]"
+  print_section_title "Estado de n8n"
   echo
-  echo "-- resumen operativo actual --"
+  print_subsection "resumen operativo actual"
   awk '
     /^## Estado de n8n/ {flag=1; next}
     /^## / && flag {exit}
     flag
   ' "${REPO_ROOT}/README.md"
   echo
-  echo "-- fase 4 --"
+  print_subsection "fase 4"
   sed -n '1,120p' "${REPO_ROOT}/evidence/FASE_4_ESTADO.md"
   echo
-  echo "-- inventario funcional minimo --"
+  print_subsection "inventario funcional minimo"
   sed -n '1,160p' "${REPO_ROOT}/evidence/n8n/N8N_WORKFLOW_MINIMUM_INVENTORY.md"
 }
 
 show_network_status() {
   print_header
-  echo "[Red / listeners / puertos clave]"
+  print_section_title "Red / listeners / puertos clave"
   echo
-  echo "-- listeners clave --"
+  print_subsection "listeners clave"
   if ! ss -lntp 2>/dev/null | grep -E ':(22|80|81|443|5678|51820|11434)\b'; then
-    echo "No se pudieron listar los puertos clave desde esta sesión."
+    notice_line warning "No se pudieron listar los puertos clave desde esta sesion."
   fi
 }
 
 show_evidence_paths() {
   print_header
-  echo "[Ultimas evidencias / ruta de control-plane]"
+  print_section_title "Ultimas evidencias / ruta de control-plane"
   echo
-  printf 'repo=%s\n' "${REPO_ROOT}"
+  kv_line "repo" "${REPO_ROOT}"
   echo
-  echo "-- rutas clave --"
+  print_subsection "rutas clave"
   printf '%s\n' \
     "${REPO_ROOT}/README.md" \
     "${REPO_ROOT}/evidence/FASE_4_ESTADO.md" \
@@ -276,37 +367,37 @@ show_evidence_paths() {
     "${REPO_ROOT}/runbooks/OPENCLAW_ROLLBACK_MVP.md" \
     "${REPO_ROOT}/evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md"
   echo
-  echo "-- ultimos ficheros de evidencia --"
+  print_subsection "ultimos ficheros de evidencia"
   find "${REPO_ROOT}/evidence" -maxdepth 3 -type f -printf '%TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | sort | tail -n 12
 }
 
 show_agents_zone() {
   print_header
-  echo "[Zona de agentes]"
+  print_section_title "Zona de agentes"
   echo
-  echo "-- objetivo --"
+  print_subsection "objetivo"
   echo "Zona separada para OpenClaw y futuros agentes, sin tocar verity_network ni servicios existentes."
   echo
-  echo "-- estado actual --"
+  print_subsection "estado actual"
   if [[ -d "${OPENCLAW_RUNTIME_ROOT}" ]]; then
-    echo "runtime_root_exists=yes"
+    kv_line "runtime_root_exists" "$(badge success yes)"
   else
-    echo "runtime_root_exists=no"
+    kv_line "runtime_root_exists" "$(badge error no)"
   fi
   if [[ -f "${OPENCLAW_RUNTIME_COMPOSE}" ]]; then
-    echo "runtime_compose_exists=yes"
+    kv_line "runtime_compose_exists" "$(badge success yes)"
   else
-    echo "runtime_compose_exists=no"
+    kv_line "runtime_compose_exists" "$(badge error no)"
   fi
   if [[ -d "${OPENCLAW_SECRETS_ROOT}" ]]; then
-    echo "secrets_root_exists=yes"
+    kv_line "secrets_root_exists" "$(badge success yes)"
   else
-    echo "secrets_root_exists=no"
+    kv_line "secrets_root_exists" "$(badge error no)"
   fi
-  echo "target_network=agents_net"
-  echo "target_gateway_bind=127.0.0.1:18789"
+  kv_line "target_network" "agents_net"
+  kv_line "target_gateway_bind" "127.0.0.1:18789"
   echo
-  echo "-- documentos MVP --"
+  print_subsection "documentos MVP"
   printf '%s\n' \
     "${REPO_ROOT}/docs/MVP_PHASE_5_AGENT_ZONE.md" \
     "${REPO_ROOT}/docs/AGENT_ZONE_SECURITY_MVP.md" \
@@ -317,33 +408,33 @@ show_openclaw_status() {
   local openclaw_host_present="no"
   local inference_endpoint="unknown"
   print_header
-  echo "[OpenClaw / inference-gateway MVP]"
+  print_section_title "OpenClaw / inference-gateway MVP"
   echo
   if command -v openclaw >/dev/null 2>&1; then
     openclaw_host_present="yes"
   fi
-  echo "-- estado base --"
-  echo "openclaw_cli_host_present=${openclaw_host_present}"
+  print_subsection "estado base"
+  kv_line "openclaw_cli_host_present" "${openclaw_host_present}"
   if [[ -d "${OPENCLAW_RUNTIME_ROOT}" ]]; then
-    echo "runtime_root=${OPENCLAW_RUNTIME_ROOT}"
+    kv_line "runtime_root" "${OPENCLAW_RUNTIME_ROOT}"
   else
-    echo "runtime_root=NOT_DEPLOYED"
+    kv_line "runtime_root" "$(badge warning NOT_DEPLOYED)"
   fi
-  echo "runtime_compose_path=${OPENCLAW_RUNTIME_COMPOSE}"
+  kv_line "runtime_compose_path" "${OPENCLAW_RUNTIME_COMPOSE}"
   if [[ -r "${OPENCLAW_RUNTIME_COMPOSE}" ]]; then
-    echo "runtime_compose_readable=yes"
+    kv_line "runtime_compose_readable" "$(badge success yes)"
   else
-    echo "runtime_compose_readable=no"
+    kv_line "runtime_compose_readable" "$(badge error no)"
   fi
-  echo "repo_template=${REPO_ROOT}/templates/openclaw/docker-compose.yaml"
-  echo "repo_env_example=${REPO_ROOT}/templates/openclaw/openclaw.env.example"
+  kv_line "repo_template" "${REPO_ROOT}/templates/openclaw/docker-compose.yaml"
+  kv_line "repo_env_example" "${REPO_ROOT}/templates/openclaw/openclaw.env.example"
   if inference_endpoint="$(openclaw_inference_endpoint 2>/dev/null)"; then
-    echo "openclaw_inference_endpoint=${inference_endpoint}"
+    kv_line "openclaw_inference_endpoint" "${inference_endpoint}"
   else
-    echo "openclaw_inference_endpoint=unknown"
+    kv_line "openclaw_inference_endpoint" "$(badge warning unknown)"
   fi
   echo
-  echo "-- runtime Docker readonly --"
+  print_subsection "runtime Docker readonly"
   if docker_available; then
     local found=0
     while IFS= read -r line; do
@@ -360,24 +451,24 @@ show_openclaw_status() {
       echo
     done < <(find_openclaw_containers || true)
     if [[ "${found}" -eq 0 ]]; then
-      echo "OPENCLAW_RUNTIME_NOT_DETECTED"
+      notice_line warning "OPENCLAW_RUNTIME_NOT_DETECTED"
     fi
   else
-    echo "Acceso directo a Docker no disponible desde esta sesión."
+    notice_line warning "Acceso directo a Docker no disponible desde esta sesion."
   fi
   echo
   show_inference_gateway_summary
   echo
-  echo "-- control basico previsto --"
-  echo "status/logs/health: visibles en consola"
-  echo "start/stop/restart: no habilitados en este MVP readonly"
+  print_subsection "control basico previsto"
+  notice_line readonly "status/logs/health visibles en consola"
+  notice_line warning "start/stop/restart no habilitados en este MVP readonly"
 }
 
 show_openclaw_logs() {
   print_header
-  echo "[OpenClaw / inference-gateway logs]"
+  print_section_title "OpenClaw / inference-gateway logs"
   echo
-  echo "-- openclaw-gateway --"
+  print_subsection "openclaw-gateway"
   if docker_available; then
     local found=0
     while IFS= read -r line; do
@@ -386,16 +477,16 @@ show_openclaw_logs() {
       cname="$(printf '%s\n' "${line}" | awk -F '\t' '{print $1}')"
       echo "-- ${cname} --"
       if ! docker logs --tail 40 "${cname}" 2>/dev/null | redact_sensitive_output; then
-        echo "No se pudieron leer logs de ${cname}."
+        notice_line warning "No se pudieron leer logs de ${cname}."
       fi
       echo
     done < <(find_openclaw_containers || true)
     if [[ "${found}" -eq 0 ]]; then
-      echo "OPENCLAW_RUNTIME_NOT_DETECTED"
+      notice_line warning "OPENCLAW_RUNTIME_NOT_DETECTED"
     fi
     return 0
   fi
-  echo "Sin acceso directo a Docker; intento de fallback al runtime local."
+  notice_line warning "Sin acceso directo a Docker; intento de fallback al runtime local."
   if [[ -d "${OPENCLAW_RUNTIME_LOG_DIR}" ]]; then
     local runtime_logs
     runtime_logs="$(find "${OPENCLAW_RUNTIME_LOG_DIR}" -maxdepth 1 -type f 2>/dev/null | sort | tail -n 5 || true)"
@@ -406,10 +497,10 @@ show_openclaw_logs() {
         echo
       done <<< "${runtime_logs}"
     else
-      echo "Sin ficheros de log visibles en ${OPENCLAW_RUNTIME_LOG_DIR}."
+      notice_line warning "Sin ficheros de log visibles en ${OPENCLAW_RUNTIME_LOG_DIR}."
     fi
   else
-    echo "Sin acceso a Docker y sin directorio de logs desplegado."
+    notice_line error "Sin acceso a Docker y sin directorio de logs desplegado."
   fi
   echo
   show_inference_gateway_logs
@@ -417,9 +508,9 @@ show_openclaw_logs() {
 
 show_openclaw_health() {
   print_header
-  echo "[OpenClaw / inference-gateway health]"
+  print_section_title "OpenClaw / inference-gateway health"
   echo
-  echo "-- OpenClaw --"
+  print_subsection "OpenClaw"
   if docker_available; then
     local found=0
     while IFS= read -r line; do
@@ -431,10 +522,10 @@ show_openclaw_health() {
       echo
     done < <(find_openclaw_containers || true)
     if [[ "${found}" -eq 0 ]]; then
-      echo "OPENCLAW_RUNTIME_NOT_DETECTED"
+      notice_line warning "OPENCLAW_RUNTIME_NOT_DETECTED"
     fi
   else
-    echo "Acceso directo a Docker no disponible desde esta sesión."
+    notice_line warning "Acceso directo a Docker no disponible desde esta sesion."
   fi
   echo
   show_inference_gateway_summary
@@ -442,44 +533,43 @@ show_openclaw_health() {
 
 show_openclaw_capabilities() {
   print_header
-  echo "[OpenClaw / capacidades]"
+  print_section_title "OpenClaw / capacidades"
   echo
   if policy_path="$(openclaw_broker_policy_path 2>/dev/null)"; then
-    echo "policy_path=${policy_path}"
+    kv_line "policy_path" "${policy_path}"
   else
-    echo "policy_path=unavailable"
+    kv_line "policy_path" "$(badge warning unavailable)"
   fi
   echo
   if ! openclaw_broker_cli_available; then
-    echo "CLI del broker no disponible desde esta sesión."
+    notice_line error "CLI del broker no disponible desde esta sesion."
     return 0
   fi
   cat <<'EOF'
--- lectura del estado efectivo --
-- readonly: visible para operador/viewer
-- allowed=yes: la acción podría ejecutarse ahora mismo
-- restricted: acción mutante o sensible
+[READONLY] readonly: visible para operador/viewer
+[SUCCESS]  allowed=yes: la accion podria ejecutarse ahora mismo
+[MUTATING] restricted: accion mutante o sensible
 EOF
   echo
   if ! run_openclaw_broker_cli show --format console; then
     echo
-    echo "No se pudo leer el estado efectivo del broker desde esta sesión."
-    echo "Posible causa: policy no visible o permisos insuficientes."
+    notice_line error "No se pudo leer el estado efectivo del broker desde esta sesion."
+    notice_line warning "Posible causa: policy no visible o permisos insuficientes."
   fi
 }
 
 show_openclaw_capabilities_audit() {
   print_header
-  echo "[OpenClaw / auditoria de capacidades]"
+  print_section_title "OpenClaw / auditoria de capacidades"
   echo
   if ! openclaw_broker_cli_available; then
-    echo "CLI del broker no disponible desde esta sesión."
+    notice_line error "CLI del broker no disponible desde esta sesion."
     return 0
   fi
-  echo "-- solo lectura; por Telegram, /audit_tail puede quedar reservado a admin --"
+  notice_line readonly "Solo lectura; por Telegram, /audit_tail puede quedar reservado a admin."
   echo
   if ! run_openclaw_broker_cli audit-tail --lines 20 --format console | redact_sensitive_output; then
-    echo "No se pudo leer la auditoria del broker desde esta sesión."
+    notice_line error "No se pudo leer la auditoria del broker desde esta sesion."
   fi
 }
 
@@ -514,19 +604,20 @@ apply_openclaw_capability_change() {
   cli_output="$(run_openclaw_broker_cli "$@" 2>&1)" || rc=$?
   if [[ "${rc}" -eq 0 ]]; then
     printf '%s\n' "${cli_output}" | redact_sensitive_output
+    notice_line success "Cambio aplicado: ${subcommand}"
     return 0
   fi
   printf '%s\n' "${cli_output}" | redact_sensitive_output
   echo
-  echo "No se pudo aplicar ${subcommand} desde esta sesión."
+  notice_line error "No se pudo aplicar ${subcommand} desde esta sesion."
   if printf '%s' "${cli_output}" | grep -q 'operator_not_authorized'; then
-    echo "Causa probable: el operator_id actual no tiene permiso suficiente para esta accion."
+    notice_line warning "Causa probable: el operator_id actual no tiene permiso suficiente para esta accion."
   elif printf '%s' "${cli_output}" | grep -q 'unknown_action'; then
-    echo "Causa probable: action_id no reconocido por la policy viva."
+    notice_line warning "Causa probable: action_id no reconocido por la policy viva."
   elif printf '%s' "${cli_output}" | grep -q 'invalid datetime'; then
-    echo "Causa probable: TTL o fecha de expiracion invalida."
+    notice_line warning "Causa probable: TTL o fecha de expiracion invalida."
   else
-    echo "Causa probable: policy no visible, permisos insuficientes o validacion rechazada."
+    notice_line warning "Causa probable: policy no visible, permisos insuficientes o validacion rechazada."
   fi
   return 1
 }
@@ -590,73 +681,73 @@ openclaw_capability_reset_one_shot_flow() {
 
 show_help() {
   print_header
-  echo "[Ayuda / limites del MVP]"
+  print_section_title "Ayuda / limites del MVP"
   echo
   cat <<'EOF'
-- Esta consola es readonly.
-- El submenu de capacidades mezcla lectura y mutacion controlada.
+[READONLY] Esta consola es principalmente readonly.
+[MUTATING] El submenu de capacidades mezcla lectura y mutacion controlada.
 - Lectura: ver estado y auditoria.
 - Mutacion: enable/disable/ttl/reset-one-shot, siempre via CLI/policy.
-- No reinicia servicios, no toca secretos y no modifica producción.
-- Si una comprobación requiere Docker o sudo y no está disponible, muestra un aviso y sigue.
-- La fuente de verdad operativa actual está en README.md y evidence/.
-- El inventario funcional mínimo de workflows de n8n sigue en estado PARTIAL por acceso readonly limitado al runtime activo.
-- OpenClaw e inference-gateway se presentan en modo readonly usando Docker/systemd/journal si están disponibles en la sesión.
+[WARNING] No reinicia servicios, no toca secretos y no modifica produccion.
+- Si una comprobacion requiere Docker o sudo y no esta disponible, muestra un aviso y sigue.
+- La fuente de verdad operativa actual esta en README.md y evidence/.
+- El inventario funcional minimo de workflows de n8n sigue en estado PARTIAL por acceso readonly limitado al runtime activo.
+- OpenClaw e inference-gateway se presentan en modo readonly usando Docker/systemd/journal si estan disponibles en la sesion.
 - El submenu de capacidades OpenClaw usa la CLI del broker; si no hay permisos suficientes o el operador no esta autorizado, degrada con mensaje claro.
-- Start/stop/restart quedan fuera de esta consola MVP.
+[WARNING] Start/stop/restart quedan fuera de esta consola MVP.
 EOF
 }
 
 show_menu() {
   print_header
-  cat <<'EOF'
-1) Estado general del host
-2) Estado de Docker
-3) Estado de n8n
-4) Red / listeners / puertos clave
-5) Ultimas evidencias / ruta de control-plane
-6) Zona de agentes
-7) OpenClaw / inference-gateway
-8) Ayuda / limites del MVP
-9) Salir
-EOF
+  print_section_title "Menu principal"
+  echo
+  menu_line "1" "Estado general del host"
+  menu_line "2" "Estado de Docker"
+  menu_line "3" "Estado de n8n"
+  menu_line "4" "Red / listeners / puertos clave"
+  menu_line "5" "Ultimas evidencias / ruta de control-plane"
+  menu_line "6" "Zona de agentes"
+  menu_line "7" "OpenClaw / inference-gateway"
+  menu_line "8" "Ayuda / limites del MVP"
+  menu_line "9" "Salir"
+  echo
+  printf '%s\n' "$(badge readonly "READONLY") inspeccion y observabilidad"
+  printf '%s\n' "$(badge mutating "MUTATING") solo aparece en capacidades OpenClaw"
 }
 
 show_agents_menu() {
   print_header
-  cat <<'EOF'
-[Zona de agentes]
-1) Resumen de la zona
-2) Seguridad y allowlist
-9) Volver
-EOF
+  print_section_title "Zona de agentes"
+  echo
+  menu_line "1" "Resumen de la zona"
+  menu_line "2" "Seguridad y allowlist"
+  menu_line "9" "Volver"
 }
 
 show_openclaw_menu() {
   print_header
-  cat <<'EOF'
-[OpenClaw / inference-gateway]
-1) Estado MVP
-2) Logs utiles
-3) Health
-4) Control basico previsto
-5) Capacidades OpenClaw (read + mutate)
-9) Volver
-EOF
+  print_section_title "OpenClaw / inference-gateway"
+  echo
+  menu_line "1" "Estado MVP"
+  menu_line "2" "Logs utiles"
+  menu_line "3" "Health"
+  menu_line "4" "Control basico previsto"
+  menu_line "5" "Capacidades OpenClaw" "$(badge mutating "READ + MUTATE")"
+  menu_line "9" "Volver"
 }
 
 show_openclaw_capabilities_menu() {
   print_header
-  cat <<'EOF'
-[OpenClaw / capacidades]
-1) Ver estado efectivo [readonly]
-2) Habilitar accion [mutating]
-3) Deshabilitar accion [mutating]
-4) Habilitar accion con TTL [mutating]
-5) Resetear one-shot consumido [mutating]
-6) Ver auditoria reciente [readonly]
-9) Volver
-EOF
+  print_section_title "OpenClaw / capacidades"
+  echo
+  menu_line "1" "Ver estado efectivo" "$(badge readonly "READONLY")"
+  menu_line "2" "Habilitar accion" "$(badge mutating "MUTATING")"
+  menu_line "3" "Deshabilitar accion" "$(badge mutating "MUTATING")"
+  menu_line "4" "Habilitar accion con TTL" "$(badge mutating "MUTATING")"
+  menu_line "5" "Resetear one-shot consumido" "$(badge mutating "MUTATING")"
+  menu_line "6" "Ver auditoria reciente" "$(badge readonly "READONLY")"
+  menu_line "9" "Volver"
 }
 
 run_agents_section() {
@@ -664,7 +755,8 @@ run_agents_section() {
     1|summary) show_agents_zone ;;
     2|security)
       print_header
-      printf '%s\n\n' "[Zona de agentes: seguridad y allowlist]"
+      print_section_title "Zona de agentes: seguridad y allowlist"
+      printf '\n'
       sed -n '1,220p' "${REPO_ROOT}/docs/AGENT_ZONE_SECURITY_MVP.md"
       printf '\n'
       sed -n '1,220p' "${REPO_ROOT}/docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md"
@@ -684,13 +776,14 @@ run_openclaw_section() {
     3|health) show_openclaw_health ;;
     4|controls)
       print_header
-      printf '%s\n\n' "[OpenClaw / inference-gateway: control basico previsto]"
+      print_section_title "OpenClaw / inference-gateway: control basico previsto"
+      printf '\n'
       cat <<'EOF'
-- status: visible en la consola
-- logs: visibles en la consola
-- health: visible en la consola
-- inference-gateway host: visible en la consola
-- start/stop/restart: no habilitados en este MVP readonly
+[READONLY] status: visible en la consola
+[READONLY] logs: visibles en la consola
+[READONLY] health: visible en la consola
+[READONLY] inference-gateway host: visible en la consola
+[WARNING] start/stop/restart: no habilitados en este MVP readonly
 - despliegue y rollback: definidos en runbooks del control-plane
 EOF
       ;;
@@ -743,6 +836,8 @@ run_section() {
       ;;
   esac
 }
+
+init_console_style
 
 if [[ -n "${SECTION}" ]]; then
   run_section "${SECTION}"
