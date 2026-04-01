@@ -47,11 +47,20 @@ Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
    - recrea `openclaw-gateway`
 4. Validar:
    - `sudo docker ps --filter name=openclaw-gateway`
-   - `sudo docker logs --tail 100 openclaw-gateway`
-   - `sudo docker inspect openclaw-gateway`
+   - `sudo docker inspect openclaw-gateway --format 'image={{.Config.Image}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}}'`
+   - `sudo docker inspect openclaw-gateway --format '{{json .NetworkSettings.Networks}}'`
+   - `sudo docker inspect openclaw-gateway --format '{{json .Mounts}}'`
+   - `sudo docker inspect openclaw-gateway --format '{{json .HostConfig.SecurityOpt}}'`
+   - `sudo docker inspect openclaw-gateway --format '{{json .HostConfig.CapDrop}}'`
    - confirmación de que está en `agents_net`
    - confirmación de que no usa `verity_network`
    - comprobación TCP MVP sobre `127.0.0.1:18789`
+
+Nota de seguridad:
+
+- no imprimir el `.env` real del runtime
+- evitar `docker inspect` bruto cuando no sea imprescindible, porque puede exponer variables de entorno sensibles del contenedor
+- revisar logs con criterio y sin copiar tokens, payloads o cabeceras de autenticación a evidencias persistentes
 
 ## criterio de aceptación
 

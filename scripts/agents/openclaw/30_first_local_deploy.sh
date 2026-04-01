@@ -107,6 +107,26 @@ read_env_key() {
   sed -n "s/^${key}=//p" "${file}" | tail -n 1
 }
 
+redact_sensitive_output() {
+  sed -E \
+    -e 's/(OPENCLAW_GATEWAY_TOKEN=)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/(INFERENCE_GATEWAY_API_KEY=)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/("token"[[:space:]]*:[[:space:]]*")[^"]+(")/\1[REDACTED]\2/g' \
+    -e 's/("apiKey"[[:space:]]*:[[:space:]]*")[^"]+(")/\1[REDACTED]\2/g' \
+    -e 's/([Aa]uthorization:?[[:space:]]*Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/([?&]token=)[^&[:space:]]+/\1[REDACTED]/g'
+}
+
+print_container_runtime_summary() {
+  local container_name="$1"
+
+  docker inspect "${container_name}" --format 'image={{.Config.Image}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}} restart={{.HostConfig.RestartPolicy.Name}}'
+  docker inspect "${container_name}" --format '{{json .NetworkSettings.Networks}}'
+  docker inspect "${container_name}" --format '{{json .Mounts}}'
+  docker inspect "${container_name}" --format '{{json .HostConfig.SecurityOpt}}'
+  docker inspect "${container_name}" --format '{{json .HostConfig.CapDrop}}'
+}
+
 ensure_runtime_layout() {
   ensure_dir "/opt/automation" 0755 root root
   ensure_dir "/opt/automation/agents" 0755 root root
@@ -116,8 +136,8 @@ ensure_runtime_layout() {
   ensure_dir "${STATE_DIR}" 0755 1000 1000
   ensure_dir "${LOGS_DIR}" 0755 1000 1000
   ensure_dir "/etc/davlos" 0755 root root
-  ensure_dir "/etc/davlos/secrets" 0755 root root
-  ensure_dir "${SECRETS_DIR}" 0755 root root
+  ensure_dir "/etc/davlos/secrets" 0750 root root
+  ensure_dir "${SECRETS_DIR}" 0750 root root
 }
 
 prepare_runtime_files() {
@@ -192,7 +212,7 @@ wait_for_openclaw() {
 
   echo "ERROR: openclaw-gateway no alcanzó estado healthy a tiempo." >&2
   docker ps --filter "name=${container_name}" >&2 || true
-  docker logs --tail 100 "${container_name}" >&2 || true
+  docker logs --tail 100 "${container_name}" 2>/dev/null | redact_sensitive_output >&2 || true
   exit 1
 }
 
@@ -204,19 +224,9 @@ print_post_checks() {
   echo "== post-deploy checks =="
   docker ps --filter "name=${container_name}"
   echo
-  docker logs --tail 100 "${container_name}"
+  docker logs --tail 100 "${container_name}" 2>/dev/null | redact_sensitive_output
   echo
-  docker inspect "${container_name}"
-  echo
-  docker inspect "${container_name}" --format '{{json .NetworkSettings.Networks}}'
-  echo
-  docker inspect "${container_name}" --format '{{json .Mounts}}'
-  echo
-  docker inspect "${container_name}" --format '{{json .HostConfig.SecurityOpt}}'
-  echo
-  docker inspect "${container_name}" --format '{{json .HostConfig.CapDrop}}'
-  echo
-  docker exec "${container_name}" sh -lc 'node /app/dist/index.js health --token "$OPENCLAW_GATEWAY_TOKEN"'
+  print_container_runtime_summary "${container_name}"
   echo
   curl -fsS "http://127.0.0.1:${port}/" >/dev/null && echo "host_http_probe=ok"
 }

@@ -10,7 +10,7 @@ Fuente de verdad operativa del VPS DAVLOS.
 - Fase 4 abierta y en pausa operativa.
 - La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
-- Sin despliegues nuevos activos ejecutados desde este repositorio.
+- OpenClaw MVP local desplegado y validado documentalmente en esta rama.
 
 ## Objetivo actual
 
@@ -18,17 +18,14 @@ Prioridad operativa vigente:
 
 1. mantener el estado estable actual de `n8n`
 2. consolidar trazabilidad mínima de Fase 4
-3. revalidar tooling readonly antes de cualquier siguiente cambio
-4. mantener Fase 4 en pausa hasta nueva decisión operativa
+3. fijar baseline técnico y documental de `OpenClaw` e `inference-gateway`
+4. revalidar tooling readonly antes de cualquier siguiente cambio
+5. mantener Fase 4 en pausa hasta nueva decisión operativa
 
 ## Estado de n8n
 
 Hechos confirmados en la documentación operativa actual:
 
-- `n8n` opera desde:
-  - `/opt/automation/n8n/compose/docker-compose.yaml`
-  - `/opt/automation/n8n/env/n8n.env`
-  - `/opt/automation/n8n/local-files`
 - runtime observado: `compose-n8n-1`
 - publicación local válida:
   - `127.0.0.1:5678`
@@ -36,46 +33,69 @@ Hechos confirmados en la documentación operativa actual:
 - topología válida:
   - `verity_network`
   - `root_n8n_data`
-- `files` usage: `skip`
+- bind mount validado:
+  - `/opt/automation/n8n/local-files -> /files`
+- `files` usage en el inventario mínimo actual: `skip`
 - existe evidencia de recuperación operativa y baseline post-recuperación
+- la evidencia reciente confirma topología post-recuperación bajo `/opt` para `local-files`, pero no debe usarse este `README` para afirmar por sí solo que el `compose` activo y el `env` efectivo ya no conservan referencias históricas a `/root`
 
 ## Estado de OpenClaw
 
 Checkpoint actual:
 
-- runtime staged en host bajo:
+- despliegue MVP local ejecutado y validado en host
+- runtime materializado en host bajo:
   - `/opt/automation/agents/openclaw`
   - `/etc/davlos/secrets/openclaw`
-- estado validado del scaffold:
-  - `STAGED_READY_FOR_IMAGE_AND_SECRETS`
-- scripts base:
+- estado validado por evidencia:
+  - contenedor `openclaw-gateway` arrancado
+  - `inference-gateway` host-side operativo como upstream interno
+  - red dedicada `agents_net`
+  - endpoint efectivo para OpenClaw: `http://172.22.0.1:11440/v1`
+  - health MVP correcto y comprobación TCP válida en `127.0.0.1:18789`
+  - imagen desplegada: `ghcr.io/openclaw/openclaw:2026.2.3`
+- scripts relevantes:
   - `scripts/agents/openclaw/10_stage_runtime.sh`
   - `scripts/agents/openclaw/20_validate_runtime_readiness.sh`
+  - `scripts/agents/openclaw/30_first_local_deploy.sh`
 - bootstrap documental:
+  - `docs/AGENTS.md`
+  - `docs/INFERENCE_GATEWAY_OLLAMA_MVP.md`
+  - `docs/AGENT_ZONE_SECURITY_MVP.md`
+  - `docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md`
   - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
   - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
   - `templates/openclaw/openclaw.json.example`
-- todavía no existe:
-  - `config/openclaw.json` real
-  - `OPENCLAW_IMAGE` real
-  - `agents_net`
-  - `docker compose up`
-  - contenedor arrancado
+- observabilidad readonly integrada en consola:
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-health`
+  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-logs`
+- todavía no existe en este baseline:
+  - broker restringido
+  - menú final de control con acciones de escritura
+  - integración Telegram
+  - chat operativo final
+  - acciones A/B/C/D
+  - allowlist real de egress aplicada en runtime
 
 ## Documentos clave
 
 - `docs/ARCHITECTURE.md`
-- `docs/LAYOUT_PHASE_2_PROPOSAL.md`
+- `docs/AGENTS.md`
 - `runbooks/N8N_PRECHECKS_EXECUTION.md`
 - `runbooks/N8N_BACKUP_AND_ROLLBACK_MINIMUM.md`
 - `runbooks/N8N_MIGRATION_WINDOW_PLAN.md`
 - `runbooks/N8N_POST_MIGRATION_VALIDATION.md`
 - `evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md`
+- `docs/INFERENCE_GATEWAY_OLLAMA_MVP.md`
+- `docs/AGENT_ZONE_SECURITY_MVP.md`
+- `docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md`
+- `runbooks/OPENCLAW_DEPLOY_MVP.md`
 - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
 - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
 
 Nota:
-Algunos runbooks enlazados conservan contexto histórico pre-migración y deben leerse como referencia histórica. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md` y en las evidencias recientes de prechecks. La verdad actual de OpenClaw en este checkpoint es: staged pero no desplegado.
+Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: MVP local desplegado, aislado y observable en modo readonly, pero todavía sin capa final de control restringido ni hardening completo de egress.
 
 ## Regla base
 

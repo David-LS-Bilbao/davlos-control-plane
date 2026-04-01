@@ -37,6 +37,16 @@ safe_run() {
   return 1
 }
 
+redact_sensitive_output() {
+  sed -E \
+    -e 's/(OPENCLAW_GATEWAY_TOKEN=)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/(INFERENCE_GATEWAY_API_KEY=)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/("token"[[:space:]]*:[[:space:]]*")[^"]+(")/\1[REDACTED]\2/g' \
+    -e 's/("apiKey"[[:space:]]*:[[:space:]]*")[^"]+(")/\1[REDACTED]\2/g' \
+    -e 's/([Aa]uthorization:?[[:space:]]*Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/g' \
+    -e 's/([?&]token=)[^&[:space:]]+/\1[REDACTED]/g'
+}
+
 docker_available() {
   docker ps >/dev/null 2>&1
 }
@@ -110,7 +120,7 @@ show_inference_gateway_logs() {
 
   journal_output="$(journalctl -u "${INFERENCE_GATEWAY_SERVICE}" -n 20 --no-pager 2>&1 || true)"
   if [[ -n "$(printf '%s' "${journal_output}" | tr -d '[:space:]')" ]]; then
-    printf '%s\n' "${journal_output}"
+    printf '%s\n' "${journal_output}" | redact_sensitive_output
   else
     echo "Sin entradas de journal visibles desde esta sesión."
   fi
@@ -313,7 +323,9 @@ show_openclaw_logs() {
       local cname
       cname="$(printf '%s\n' "${line}" | awk -F '\t' '{print $1}')"
       echo "-- ${cname} --"
-      docker logs --tail 40 "${cname}" 2>/dev/null || echo "No se pudieron leer logs de ${cname}."
+      if ! docker logs --tail 40 "${cname}" 2>/dev/null | redact_sensitive_output; then
+        echo "No se pudieron leer logs de ${cname}."
+      fi
       echo
     done < <(find_openclaw_containers || true)
     if [[ "${found}" -eq 0 ]]; then
@@ -328,7 +340,7 @@ show_openclaw_logs() {
     if [[ -n "${runtime_logs}" ]]; then
       while read -r logfile; do
         echo "-- ${logfile} --"
-        tail -n 40 "${logfile}" 2>/dev/null || true
+        tail -n 40 "${logfile}" 2>/dev/null | redact_sensitive_output || true
         echo
       done <<< "${runtime_logs}"
     else
