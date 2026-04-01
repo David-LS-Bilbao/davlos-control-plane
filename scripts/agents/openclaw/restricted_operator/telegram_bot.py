@@ -9,12 +9,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 from audit import AuditLogger
 from broker import RestrictedOperatorBroker
+import cli as broker_cli
 from models import BrokerRequest, BrokerResult
 from policy import PolicyError, PolicyStore
 
@@ -25,6 +28,17 @@ class TelegramApiError(RuntimeError):
 
 class RateLimitExceededError(RuntimeError):
     pass
+
+
+@dataclass
+class PendingConfirmation:
+    intent: str
+    operator_id: str
+    summary: str
+    mutation: str
+    action_id: str
+    params: dict[str, Any]
+    reason: str
 
 
 class TelegramHttpClient:
@@ -124,6 +138,7 @@ class TelegramCommandProcessor:
             api_base_url=self.policy.telegram.api_base_url,
             token=token,
         )
+        self.pending_confirmations: dict[str, PendingConfirmation] = {}
 
     def process_update(self, update: dict[str, Any]) -> int | None:
         if isinstance(update.get("edited_message"), dict):
@@ -136,7 +151,7 @@ class TelegramCommandProcessor:
         user = message.get("from") or {}
         text = message.get("text")
         update_id = update.get("update_id")
-        if not isinstance(text, str) or not text.startswith("/"):
+        if not isinstance(text, str) or not text.strip():
             return int(update_id) if isinstance(update_id, int) else None
         chat_id = str(chat.get("id", ""))
         user_id = str(user.get("id", ""))
@@ -147,7 +162,7 @@ class TelegramCommandProcessor:
             reply = "Rate limit activo. Espera unos segundos y reintenta."
             self._audit_channel_event(
                 event="telegram_command_rejected_rate_limited",
-                command=text.split(" ", 1)[0],
+                command=text.split(" ", 1)[0] if text.startswith("/") else "conversation",
                 chat_id=chat_id,
                 user_id=user_id,
                 operator_id=None,
@@ -186,7 +201,8 @@ class TelegramCommandProcessor:
                 error="multiline commands are not allowed",
             )
             return "Comando inválido."
-        command, argument_text = self._split_command(text)
+        stripped_text = text.strip()
+        command, argument_text = self._split_command(stripped_text)
         principal, operator_id = self.policy.resolve_telegram_operator(chat_id=chat_id, user_id=user_id)
         if principal is None or operator_id is None:
             self._audit_channel_event(
@@ -200,6 +216,31 @@ class TelegramCommandProcessor:
             )
             return "Chat no autorizado para este bot."
 
+        if command.startswith("/"):
+            return self._handle_command(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                command=command,
+                argument_text=argument_text,
+            )
+
+        return self._handle_conversation(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            text=stripped_text,
+        )
+
+    def _handle_command(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        command: str,
+        argument_text: str,
+    ) -> str:
         if command in {"/help", "/start"}:
             self._audit_channel_event(
                 event="telegram_command_executed",
@@ -236,6 +277,208 @@ class TelegramCommandProcessor:
             error="unknown command",
         )
         return "Comando no soportado. Usa /help."
+
+    def _handle_conversation(self, *, chat_id: str, user_id: str, operator_id: str, text: str) -> str:
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        pending = self.pending_confirmations.get(pending_key)
+        normalized = self._normalize_text(text)
+        if pending is not None and self._is_confirmation_accept(normalized):
+            self.pending_confirmations.pop(pending_key, None)
+            self._audit_channel_event(
+                event="confirmation_accepted",
+                command="conversation",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=True,
+                action_id=pending.action_id,
+                params={"intent": pending.intent, "summary": pending.summary},
+            )
+            return self._execute_pending_confirmation(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                pending=pending,
+            )
+        if pending is not None and self._is_confirmation_reject(normalized):
+            self.pending_confirmations.pop(pending_key, None)
+            self._audit_channel_event(
+                event="confirmation_rejected",
+                command="conversation",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=True,
+                action_id=pending.action_id,
+                params={"intent": pending.intent, "summary": pending.summary},
+            )
+            return "Acción cancelada. No se aplicó ningún cambio."
+        if pending is not None:
+            return (
+                "Hay una acción pendiente de confirmación.\n"
+                f"{pending.summary}\n"
+                "Responde 'si' para ejecutar o 'no' para cancelar."
+            )
+
+        intent = self._detect_conversational_intent(text)
+        if intent is None:
+            self._audit_channel_event(
+                event="intent_rejected_unsupported",
+                command="conversation",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error="unsupported or ambiguous conversational intent",
+                params={"text_preview": text[:120]},
+            )
+            return self._render_conversation_help()
+
+        self._audit_channel_event(
+            event="intent_detected",
+            command="conversation",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id=intent["action_id"],
+            params={"intent": intent["intent"], "text_preview": text[:120]},
+        )
+        if intent["intent"] == "status":
+            return self._handle_status(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if intent["intent"] == "capabilities":
+            return self._handle_capabilities(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if intent["intent"] == "audit_tail":
+            return self._handle_audit_tail(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if intent["intent"] == "logs_read":
+            return self._execute_conversation_broker_action(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                action_id="action.logs.read.v1",
+                params=intent["params"],
+            )
+
+        pending = PendingConfirmation(
+            intent=intent["intent"],
+            operator_id=operator_id,
+            summary=intent["summary"],
+            mutation=intent["mutation"],
+            action_id=intent["action_id"],
+            params=intent["params"],
+            reason=intent["reason"],
+        )
+        self.pending_confirmations[pending_key] = pending
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command="conversation",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id=pending.action_id,
+            params={"intent": pending.intent, "summary": pending.summary},
+        )
+        return (
+            "Acción interpretada:\n"
+            f"{pending.summary}\n"
+            "Responde 'si' para ejecutar o 'no' para cancelar."
+        )
+
+    def _execute_conversation_broker_action(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        action_id: str,
+        params: dict[str, Any],
+    ) -> str:
+        effective = self.policy.get_effective_action_state(action_id)
+        if effective is None:
+            return "action_id desconocido."
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission=effective.permission,
+            command="conversation",
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id=action_id,
+        )
+        if operator is None:
+            return f"Operador no autorizado para {action_id}."
+        result = self.broker.execute(BrokerRequest(action_id=action_id, params=params, actor=operator_id))
+        self._audit_channel_event(
+            event="telegram_action_requested",
+            command="conversation",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=result.ok,
+            result=result.to_dict(),
+            error=result.error,
+            code=result.code,
+            operator_role=operator.role,
+            action_id=action_id,
+            params=self._safe_params_for_audit(params),
+        )
+        return self._render_execution_result(result)
+
+    def _execute_pending_confirmation(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        pending: PendingConfirmation,
+    ) -> str:
+        if pending.operator_id != operator_id:
+            return "La confirmación no coincide con el operador actual."
+        rc = 1
+        if pending.mutation == "set_enabled":
+            rc = broker_cli.set_enabled(
+                self.policy_path,
+                pending.action_id,
+                bool(pending.params["enabled"]),
+                operator_id,
+                operator_id,
+                pending.reason,
+            )
+        elif pending.mutation == "enable_with_ttl":
+            rc = broker_cli.enable_with_optional_ttl(
+                self.policy_path,
+                pending.action_id,
+                ttl_minutes=int(pending.params["ttl_minutes"]),
+                expires_at=None,
+                operator_id=operator_id,
+                updated_by=operator_id,
+                reason=pending.reason,
+            )
+        elif pending.mutation == "reset_one_shot":
+            rc = broker_cli.reset_one_shot(
+                self.policy_path,
+                pending.action_id,
+                operator_id,
+                operator_id,
+                pending.reason,
+            )
+        else:
+            return "Intención pendiente no soportada."
+        self._audit_channel_event(
+            event="action_executed" if rc == 0 else "action_failed",
+            command="conversation",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=rc == 0,
+            action_id=pending.action_id,
+            params={"intent": pending.intent, "summary": pending.summary},
+        )
+        return self._render_mutation_result(
+            ok=rc == 0,
+            summary=pending.summary,
+            action_id=pending.action_id,
+        )
 
     def _handle_status(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
         operator = self._authorize_operator(
@@ -430,6 +673,154 @@ class TelegramCommandProcessor:
             return False
 
     @staticmethod
+    def _pending_key(*, chat_id: str, user_id: str) -> str:
+        return f"{chat_id}:{user_id}"
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", text)
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return " ".join(normalized.lower().strip().split())
+
+    @staticmethod
+    def _is_confirmation_accept(normalized: str) -> bool:
+        return normalized in {"si", "sí", "confirmar", "confirmo", "ok", "dale"}
+
+    @staticmethod
+    def _is_confirmation_reject(normalized: str) -> bool:
+        return normalized in {"no", "cancelar", "cancela", "rechazar"}
+
+    def _detect_conversational_intent(self, text: str) -> dict[str, Any] | None:
+        normalized = self._normalize_text(text)
+        if normalized in {"estado", "estado general", "como va", "como va openclaw", "salud general"}:
+            return {"intent": "status", "action_id": "telegram.command", "params": {}}
+        if normalized in {
+            "capacidades",
+            "capacidades activas",
+            "que capacidades hay",
+            "que capacidades estan activas",
+            "capabilities",
+        }:
+            return {"intent": "capabilities", "action_id": "telegram.command", "params": {}}
+        if normalized in {"auditoria", "auditoria reciente", "audit", "audit tail", "ultimos eventos"}:
+            return {"intent": "audit_tail", "action_id": "telegram.command", "params": {}}
+
+        logs_intent = self._match_logs_intent(normalized)
+        if logs_intent is not None:
+            return logs_intent
+
+        ttl_intent = self._match_enable_ttl_intent(normalized)
+        if ttl_intent is not None:
+            return ttl_intent
+
+        set_enabled_intent = self._match_set_enabled_intent(normalized)
+        if set_enabled_intent is not None:
+            return set_enabled_intent
+
+        reset_intent = self._match_reset_one_shot_intent(normalized)
+        if reset_intent is not None:
+            return reset_intent
+
+        return None
+
+    def _match_logs_intent(self, normalized: str) -> dict[str, Any] | None:
+        if "log" not in normalized:
+            return None
+        stream_id = "openclaw_runtime"
+        if "audit" in normalized or "auditoria" in normalized:
+            stream_id = "restricted_operator_audit"
+        tail_lines = 20
+        for token in normalized.split():
+            if token.isdigit():
+                tail_lines = int(token)
+                break
+        return {
+            "intent": "logs_read",
+            "action_id": "action.logs.read.v1",
+            "params": {"stream_id": stream_id, "tail_lines": tail_lines},
+        }
+
+    def _match_set_enabled_intent(self, normalized: str) -> dict[str, Any] | None:
+        action_id = self._extract_action_id(normalized)
+        if action_id is None:
+            return None
+        if normalized.startswith("habilita ") or normalized.startswith("activar ") or normalized.startswith("activa "):
+            return {
+                "intent": "enable_capability",
+                "action_id": action_id,
+                "mutation": "set_enabled",
+                "params": {"enabled": True},
+                "reason": "telegram_conversational_enable",
+                "summary": f"Habilitar {action_id}",
+            }
+        if normalized.startswith("deshabilita ") or normalized.startswith("desactiva "):
+            return {
+                "intent": "disable_capability",
+                "action_id": action_id,
+                "mutation": "set_enabled",
+                "params": {"enabled": False},
+                "reason": "telegram_conversational_disable",
+                "summary": f"Deshabilitar {action_id}",
+            }
+        return None
+
+    def _match_enable_ttl_intent(self, normalized: str) -> dict[str, Any] | None:
+        if not (normalized.startswith("habilita ") or normalized.startswith("activa ")):
+            return None
+        action_id = self._extract_action_id(normalized)
+        if action_id is None:
+            return None
+        ttl_minutes: int | None = None
+        tokens = normalized.split()
+        for index, token in enumerate(tokens):
+            if token.isdigit():
+                next_token = tokens[index + 1] if index + 1 < len(tokens) else ""
+                if next_token.startswith("min"):
+                    ttl_minutes = int(token)
+                    break
+        if ttl_minutes is None:
+            return None
+        return {
+            "intent": "enable_capability_with_ttl",
+            "action_id": action_id,
+            "mutation": "enable_with_ttl",
+            "params": {"ttl_minutes": ttl_minutes},
+            "reason": "telegram_conversational_enable_ttl",
+            "summary": f"Habilitar {action_id} durante {ttl_minutes} minutos",
+        }
+
+    def _match_reset_one_shot_intent(self, normalized: str) -> dict[str, Any] | None:
+        if "reset" not in normalized and "resetea" not in normalized:
+            return None
+        if "one shot" not in normalized and "one-shot" not in normalized:
+            return None
+        action_id = self._extract_action_id(normalized)
+        if action_id is None:
+            return None
+        return {
+            "intent": "reset_one_shot",
+            "action_id": action_id,
+            "mutation": "reset_one_shot",
+            "params": {},
+            "reason": "telegram_conversational_reset_one_shot",
+            "summary": f"Resetear one-shot de {action_id}",
+        }
+
+    @staticmethod
+    def _extract_action_id(normalized: str) -> str | None:
+        aliases = {
+            "dropzone": "action.dropzone.write.v1",
+            "webhook": "action.webhook.trigger.v1",
+            "restart": "action.openclaw.restart.v1",
+        }
+        for token in normalized.replace(",", " ").split():
+            if token.startswith("action.") and token.endswith(".v1"):
+                return token
+            if token in aliases:
+                return aliases[token]
+        return None
+
+    @staticmethod
     def _split_command(text: str) -> tuple[str, str]:
         command, _, remainder = text.strip().partition(" ")
         return command, remainder.strip()
@@ -557,13 +948,35 @@ class TelegramCommandProcessor:
         )
 
     @staticmethod
+    def _render_mutation_result(*, ok: bool, summary: str, action_id: str) -> str:
+        if ok:
+            return f"Acción aplicada.\n{summary}\naction_id={action_id}"
+        return f"No se pudo aplicar la acción.\n{summary}\naction_id={action_id}"
+
+    @staticmethod
+    def _render_conversation_help() -> str:
+        return (
+            "No entendí la intención o no está soportada.\n"
+            "Prueba una de estas frases:\n"
+            "- estado general\n"
+            "- capacidades activas\n"
+            "- auditoría reciente\n"
+            "- logs openclaw 20\n"
+            "- habilita action.dropzone.write.v1\n"
+            "- deshabilita action.dropzone.write.v1\n"
+            "- habilita action.dropzone.write.v1 por 15 minutos\n"
+            "- resetea one-shot action.webhook.trigger.v1"
+        )
+
+    @staticmethod
     def _render_help(operator_id: str) -> str:
         return (
             f"operator={operator_id}\n"
             "/status\n"
             "/capabilities\n"
             "/audit_tail\n"
-            "/execute <action_id> [k=v ...]"
+            "/execute <action_id> [k=v ...]\n"
+            "Conversacional: estado general | capacidades activas | auditoría reciente | logs openclaw 20"
         )
 
 

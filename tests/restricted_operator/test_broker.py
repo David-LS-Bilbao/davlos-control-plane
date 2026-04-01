@@ -414,6 +414,45 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("actions_total=", reply)
         self.assertIn("operator=authorized-operator", reply)
 
+    def test_telegram_conversational_status_intent(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="estado general")
+        self.assertIn("actions_total=", reply)
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("intent_detected", audit_events)
+
+    def test_telegram_conversational_capabilities_intent(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="capacidades activas")
+        self.assertIn("action.health.general.v1", reply)
+        self.assertIn("exec=yes", reply)
+
+    def test_telegram_conversational_mutation_requires_confirmation(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
+        self.assertIn("Acción interpretada:", reply)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("confirmation_requested", audit_events)
+
+    def test_telegram_conversational_mutation_executes_after_confirmation(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="si")
+        self.assertIn("Acción aplicada.", reply)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "disabled")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("confirmation_accepted", audit_events)
+        self.assertIn("action_executed", audit_events)
+
+    def test_telegram_conversational_rejects_unsupported_intent(self) -> None:
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
+        self.assertIn("No entendí la intención", reply)
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("intent_rejected_unsupported", audit_events)
+
     def test_telegram_rejects_unauthorized_chat(self) -> None:
         reply = self.telegram.handle_text(chat_id="9999", user_id="42", text="/status")
         self.assertEqual(reply, "Chat no autorizado para este bot.")
