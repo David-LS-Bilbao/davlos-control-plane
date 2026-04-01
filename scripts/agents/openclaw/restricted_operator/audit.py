@@ -17,6 +17,9 @@ class AuditLogger:
         actor: str,
         params: dict,
         ok: bool,
+        operator_id: str | None = None,
+        operator_role: str | None = None,
+        authorized: bool | None = None,
         result: dict | None = None,
         error: str | None = None,
         code: str | None = None,
@@ -30,6 +33,12 @@ class AuditLogger:
             "params": params,
             "ok": ok,
         }
+        if operator_id is not None:
+            record["operator_id"] = operator_id
+        if operator_role is not None:
+            record["operator_role"] = operator_role
+        if authorized is not None:
+            record["authorized"] = authorized
         if result:
             record["result"] = result
         if error:

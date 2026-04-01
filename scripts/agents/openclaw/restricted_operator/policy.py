@@ -10,12 +10,21 @@ from models import (
     EffectiveActionState,
     HealthCheckConfig,
     LogStreamConfig,
+    OperatorAuthConfig,
+    OperatorRecord,
     WebhookTargetConfig,
 )
 
 
 class PolicyError(ValueError):
     pass
+
+
+DEFAULT_ROLE_PERMISSIONS = {
+    "viewer": ["policy.read"],
+    "operator": ["policy.read", "policy.mutate"],
+    "admin": ["policy.read", "policy.mutate"],
+}
 
 
 def parse_optional_datetime(value: str | None, field_name: str) -> datetime | None:
@@ -42,6 +51,7 @@ class PolicyStore:
         self.log_streams = self._load_log_streams(self.raw.get("log_streams", {}))
         self.webhook_targets = self._load_webhook_targets(self.raw.get("webhook_targets", {}))
         self.health_checks = self._load_health_checks(self.raw.get("health_checks", {}))
+        self.operator_auth = self._load_operator_auth(self.raw.get("operator_auth", {}))
         self.state_store_path = Path(self.broker.state_store_path)
         self.runtime_state = self._load_runtime_state(self.state_store_path)
 
@@ -133,6 +143,36 @@ class PolicyStore:
         return checks
 
     @staticmethod
+    def _load_operator_auth(payload: dict) -> OperatorAuthConfig:
+        roles_payload = payload.get("roles", DEFAULT_ROLE_PERMISSIONS)
+        if not isinstance(roles_payload, dict):
+            raise PolicyError("operator_auth.roles must be an object")
+        roles: dict[str, list[str]] = {}
+        for role_name, permissions in roles_payload.items():
+            if not isinstance(permissions, list) or not all(isinstance(item, str) for item in permissions):
+                raise PolicyError(f"invalid permissions for role: {role_name}")
+            roles[str(role_name)] = [str(item) for item in permissions]
+
+        operators_payload = payload.get("operators", {})
+        if not isinstance(operators_payload, dict):
+            raise PolicyError("operator_auth.operators must be an object")
+        operators: dict[str, OperatorRecord] = {}
+        for operator_id, item in operators_payload.items():
+            if not isinstance(item, dict):
+                raise PolicyError(f"invalid operator record: {operator_id}")
+            role = str(item.get("role", "viewer"))
+            if role not in roles:
+                raise PolicyError(f"unknown operator role for {operator_id}: {role}")
+            operators[str(operator_id)] = OperatorRecord(
+                operator_id=str(operator_id),
+                role=role,
+                enabled=bool(item.get("enabled", True)),
+                display_name=str(item["display_name"]) if item.get("display_name") is not None else None,
+                reason=str(item["reason"]) if item.get("reason") is not None else None,
+            )
+        return OperatorAuthConfig(roles=roles, operators=operators)
+
+    @staticmethod
     def _load_runtime_state(path: Path) -> dict[str, dict]:
         if not path.exists():
             return {}
@@ -205,6 +245,17 @@ class PolicyStore:
             if state is not None:
                 states.append(state)
         return states
+
+    def authorize_operator(self, operator_id: str | None, permission: str) -> OperatorRecord:
+        if not operator_id:
+            raise PolicyError("operator_id is required")
+        operator = self.operator_auth.operators.get(operator_id)
+        if operator is None or not operator.enabled:
+            raise PolicyError(f"operator is not authorized: {operator_id}")
+        granted_permissions = set(self.operator_auth.roles.get(operator.role, []))
+        if permission not in granted_permissions:
+            raise PolicyError(f"operator lacks permission {permission}: {operator_id}")
+        return operator
 
     def consume_one_shot(
         self,

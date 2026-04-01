@@ -51,6 +51,21 @@ class HealthCheckConfig:
     expect_status: int
 
 
+@dataclass(frozen=True)
+class OperatorRecord:
+    operator_id: str
+    role: str
+    enabled: bool
+    display_name: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class OperatorAuthConfig:
+    roles: dict[str, list[str]]
+    operators: dict[str, OperatorRecord]
+
+
 @dataclass
 class BrokerRequest:
     action_id: str

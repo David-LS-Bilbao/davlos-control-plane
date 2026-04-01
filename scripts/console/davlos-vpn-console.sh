@@ -15,6 +15,7 @@ OLLAMA_LOCAL_ENDPOINT="http://127.0.0.1:11434"
 OPENCLAW_RESTRICTED_OPERATOR_CLI="${REPO_ROOT}/scripts/agents/openclaw/restricted_operator/cli.py"
 OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO="${REPO_ROOT}/templates/openclaw/restricted_operator_policy.json"
 OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME="${OPENCLAW_RUNTIME_ROOT}/broker/restricted_operator_policy.json"
+OPENCLAW_OPERATOR_SESSION_ID="${DAVLOS_OPERATOR_ID:-}"
 
 print_header() {
   printf '\n'
@@ -98,11 +99,32 @@ openclaw_broker_cli_available() {
 }
 
 openclaw_operator_identity() {
+  if [[ -n "${OPENCLAW_OPERATOR_SESSION_ID}" ]]; then
+    printf '%s\n' "${OPENCLAW_OPERATOR_SESSION_ID}"
+    return 0
+  fi
   if command -v id >/dev/null 2>&1; then
     id -un 2>/dev/null || printf '%s\n' "${USER:-unknown}"
     return 0
   fi
   printf '%s\n' "${USER:-unknown}"
+}
+
+resolve_openclaw_operator_identity() {
+  local default_operator operator
+  default_operator="$(openclaw_operator_identity)"
+  if [[ ! -t 0 ]]; then
+    OPENCLAW_OPERATOR_SESSION_ID="${default_operator}"
+    printf '%s\n' "${OPENCLAW_OPERATOR_SESSION_ID}"
+    return 0
+  fi
+  operator="$(prompt_with_default 'operator_id' "${default_operator}")"
+  if [[ -z "${operator}" ]]; then
+    echo "operator_id requerido."
+    return 1
+  fi
+  OPENCLAW_OPERATOR_SESSION_ID="${operator}"
+  printf '%s\n' "${OPENCLAW_OPERATOR_SESSION_ID}"
 }
 
 run_openclaw_broker_cli() {
@@ -495,9 +517,10 @@ openclaw_capability_enable_flow() {
     echo "action_id requerido."
     return 1
   fi
-  operator="$(openclaw_operator_identity)"
+  operator="$(resolve_openclaw_operator_identity)" || return 1
   reason="$(prompt_with_default 'motivo' 'enabled_from_console')"
-  apply_openclaw_capability_change "enable" enable --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+  printf 'operator_id=%s\n' "${operator}"
+  apply_openclaw_capability_change "enable" enable --action-id "${action_id}" --operator-id "${operator}" --reason "${reason}"
 }
 
 openclaw_capability_disable_flow() {
@@ -507,9 +530,10 @@ openclaw_capability_disable_flow() {
     echo "action_id requerido."
     return 1
   fi
-  operator="$(openclaw_operator_identity)"
+  operator="$(resolve_openclaw_operator_identity)" || return 1
   reason="$(prompt_with_default 'motivo' 'disabled_from_console')"
-  apply_openclaw_capability_change "disable" disable --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+  printf 'operator_id=%s\n' "${operator}"
+  apply_openclaw_capability_change "disable" disable --action-id "${action_id}" --operator-id "${operator}" --reason "${reason}"
 }
 
 openclaw_capability_ttl_flow() {
@@ -524,9 +548,10 @@ openclaw_capability_ttl_flow() {
     echo "ttl_minutes requerido."
     return 1
   fi
-  operator="$(openclaw_operator_identity)"
+  operator="$(resolve_openclaw_operator_identity)" || return 1
   reason="$(prompt_with_default 'motivo' 'ttl_enabled_from_console')"
-  apply_openclaw_capability_change "enable-with-ttl" enable --action-id "${action_id}" --ttl-minutes "${ttl_minutes}" --updated-by "${operator}" --reason "${reason}"
+  printf 'operator_id=%s\n' "${operator}"
+  apply_openclaw_capability_change "enable-with-ttl" enable --action-id "${action_id}" --ttl-minutes "${ttl_minutes}" --operator-id "${operator}" --reason "${reason}"
 }
 
 openclaw_capability_reset_one_shot_flow() {
@@ -536,9 +561,10 @@ openclaw_capability_reset_one_shot_flow() {
     echo "action_id requerido."
     return 1
   fi
-  operator="$(openclaw_operator_identity)"
+  operator="$(resolve_openclaw_operator_identity)" || return 1
   reason="$(prompt_with_default 'motivo' 'reset_one_shot_from_console')"
-  apply_openclaw_capability_change "reset-one-shot" reset-one-shot --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+  printf 'operator_id=%s\n' "${operator}"
+  apply_openclaw_capability_change "reset-one-shot" reset-one-shot --action-id "${action_id}" --operator-id "${operator}" --reason "${reason}"
 }
 
 show_help() {
@@ -552,7 +578,7 @@ show_help() {
 - La fuente de verdad operativa actual está en README.md y evidence/.
 - El inventario funcional mínimo de workflows de n8n sigue en estado PARTIAL por acceso readonly limitado al runtime activo.
 - OpenClaw e inference-gateway se presentan en modo readonly usando Docker/systemd/journal si están disponibles en la sesión.
-- El submenu de capacidades OpenClaw usa la CLI del broker; si no hay permisos suficientes para escribir su state store, degrada con mensaje claro.
+- El submenu de capacidades OpenClaw usa la CLI del broker; si no hay permisos suficientes o el operador no esta autorizado, degrada con mensaje claro.
 - Start/stop/restart quedan fuera de esta consola MVP.
 EOF
 }

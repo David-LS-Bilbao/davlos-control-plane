@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import io
 import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +17,7 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 from broker import RestrictedOperatorBroker  # noqa: E402
+import cli as broker_cli  # noqa: E402
 from models import BrokerRequest  # noqa: E402
 from policy import PolicyStore  # noqa: E402
 
@@ -69,6 +72,27 @@ class BrokerTests(unittest.TestCase):
                         "action.webhook.trigger.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": True, "reason": "test", "updated_by": "test", "permission": "trigger", "description": ""},
                         "action.openclaw.restart.v1": {"enabled": False, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "control", "description": ""},
                         "action.dropzone.write.v1": {"enabled": True, "mode": "restricted", "expires_at": None, "one_shot": False, "reason": "test", "updated_by": "test", "permission": "write", "description": ""}
+                    },
+                    "operator_auth": {
+                        "roles": {
+                            "viewer": ["policy.read"],
+                            "operator": ["policy.read", "policy.mutate"],
+                            "admin": ["policy.read", "policy.mutate"],
+                        },
+                        "operators": {
+                            "authorized-operator": {
+                                "role": "operator",
+                                "enabled": True,
+                                "display_name": "Authorized Operator",
+                                "reason": "test_operator",
+                            },
+                            "readonly-viewer": {
+                                "role": "viewer",
+                                "enabled": True,
+                                "display_name": "Readonly Viewer",
+                                "reason": "test_viewer",
+                            },
+                        },
                     },
                     "health_checks": {
                         "local_ok": {"url": f"{self.base_url}/healthz", "expect_status": 200}
@@ -169,8 +193,17 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(errors)
 
+    def test_policy_validation_rejects_unknown_operator_role(self) -> None:
+        payload = json.loads(self.policy_path.read_text())
+        payload["operator_auth"]["operators"]["authorized-operator"]["role"] = "unknown-role"
+        self.policy_path.write_text(json.dumps(payload))
+        ok, errors = PolicyStore.validate_policy(self.policy_path)
+        self.assertFalse(ok)
+        self.assertTrue(errors)
+
     def test_policy_store_can_enable_disable_and_ttl(self) -> None:
         store = PolicyStore(str(self.policy_path))
+        store.authorize_operator("authorized-operator", "policy.mutate")
         store.set_action_enabled("action.dropzone.write.v1", enabled=False, updated_by="tester", reason="disable")
         disabled = store.get_effective_action_state("action.dropzone.write.v1")
         self.assertIsNotNone(disabled)
@@ -193,6 +226,64 @@ class BrokerTests(unittest.TestCase):
         reset = store.get_effective_action_state("action.webhook.trigger.v1")
         self.assertIsNotNone(reset)
         self.assertEqual(reset.status, "enabled")
+
+    def test_authorized_operator_can_change_policy(self) -> None:
+        rc = broker_cli.set_enabled(
+            str(self.policy_path),
+            "action.dropzone.write.v1",
+            False,
+            "authorized-operator",
+            "authorized-operator",
+            "authorized_disable",
+        )
+        self.assertEqual(rc, 0)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "disabled")
+
+    def test_unauthorized_operator_cannot_change_policy(self) -> None:
+        rc = broker_cli.set_enabled(
+            str(self.policy_path),
+            "action.dropzone.write.v1",
+            False,
+            "unknown-operator",
+            "unknown-operator",
+            "unauthorized_disable",
+        )
+        self.assertEqual(rc, 1)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("operator_authorization_rejected", audit_events)
+
+    def test_readonly_show_is_permitted_without_authorization(self) -> None:
+        store = PolicyStore(str(self.policy_path))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            rc = broker_cli.dump_states(store, None)
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertIn("actions", payload)
+        self.assertTrue(any(item["action_id"] == "action.health.general.v1" for item in payload["actions"]))
+
+    def test_viewer_cannot_change_policy(self) -> None:
+        rc = broker_cli.set_ttl(
+            str(self.policy_path),
+            "action.dropzone.write.v1",
+            ttl_minutes=15,
+            expires_at=None,
+            operator_id="readonly-viewer",
+            updated_by="readonly-viewer",
+            reason="viewer_attempt",
+        )
+        self.assertEqual(rc, 1)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertIsNone(effective.expires_at)
 
 
 if __name__ == "__main__":

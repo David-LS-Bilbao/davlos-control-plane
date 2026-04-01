@@ -60,6 +60,41 @@
       "description": "Escritura acotada en drop-zone controlada"
     }
   },
+  "operator_auth": {
+    "roles": {
+      "viewer": [
+        "policy.read"
+      ],
+      "operator": [
+        "policy.read",
+        "policy.mutate"
+      ],
+      "admin": [
+        "policy.read",
+        "policy.mutate"
+      ]
+    },
+    "operators": {
+      "root": {
+        "role": "admin",
+        "enabled": true,
+        "display_name": "Host root operator",
+        "reason": "local_vps_admin"
+      },
+      "davlos-operator": {
+        "role": "operator",
+        "enabled": true,
+        "display_name": "DAVLOS delegated operator",
+        "reason": "interactive_console_operator"
+      },
+      "davlos-viewer": {
+        "role": "viewer",
+        "enabled": true,
+        "display_name": "DAVLOS readonly viewer",
+        "reason": "readonly_inspection"
+      }
+    }
+  },
   "health_checks": {
     "openclaw_ui": {
       "url": "http://127.0.0.1:18789/",

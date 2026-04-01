@@ -20,6 +20,12 @@ La consola solo actúa como front-end Bash de operador para:
 - resetear una acción `one_shot`
 - ver auditoría reciente
 
+Las mutaciones no se aplican directamente desde Bash:
+
+- la consola resuelve un `operator_id`
+- la CLI valida ese `operator_id` contra la allowlist viva de operadores
+- si el operador no está autorizado, la mutación se rechaza y queda auditada
+
 ## entrada al menú
 
 Desde la consola:
@@ -52,6 +58,7 @@ Muestra por acción:
 
 Pide:
 
+- `operator_id` (explícito o derivado de la sesión)
 - `action_id`
 - `motivo`
 
@@ -63,6 +70,7 @@ Llama a:
 
 Pide:
 
+- `operator_id`
 - `action_id`
 - `motivo`
 
@@ -74,6 +82,7 @@ Llama a:
 
 Pide:
 
+- `operator_id`
 - `action_id`
 - `ttl_minutes`
 - `motivo`
@@ -86,6 +95,7 @@ Llama a:
 
 Pide:
 
+- `operator_id`
 - `action_id`
 - `motivo`
 
@@ -106,7 +116,9 @@ Los cambios de capacidades dejan al menos:
 - `action_id`
 - tipo de cambio
 - `reason`
-- operador (`updated_by`)
+- `operator_id`
+- rol de operador si aplica
+- operador efectivo (`updated_by`)
 
 La auditoría se conserva en el audit log del broker.
 
@@ -117,6 +129,7 @@ Si la sesión no tiene:
 - acceso a la policy
 - acceso a Python
 - permisos para escribir el state store
+- un `operator_id` autorizado para mutaciones
 
 la consola:
 
