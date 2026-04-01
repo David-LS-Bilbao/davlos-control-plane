@@ -24,6 +24,12 @@ Levantar OpenClaw en una zona propia sin tocar `n8n`, NPM ni WireGuard.
 
 - `ghcr.io/openclaw/openclaw:2026.2.3`
 
+Estrategia consolidada de imagen para Fase 1:
+
+- el runtime actual puede mantenerse en el tag revisado mientras no se haga un refresh de imagen
+- el siguiente cambio deliberado sobre imagen debe fijarse por digest revisado
+- no hacer rotaciones oportunistas de imagen dentro de una fase dedicada a hardening documental y de boundary
+
 ## configuración mínima efectiva
 
 - `COMPOSE_PROJECT_NAME=openclaw`
@@ -61,6 +67,8 @@ Nota de seguridad:
 - no imprimir el `.env` real del runtime
 - evitar `docker inspect` bruto cuando no sea imprescindible, porque puede exponer variables de entorno sensibles del contenedor
 - revisar logs con criterio y sin copiar tokens, payloads o cabeceras de autenticación a evidencias persistentes
+- el `healthcheck` actual basado en el comando `openclaw ... health --token` se considera suficiente para este MVP porque valida el propio runtime autenticado; no cambiarlo en esta fase salvo evidencia concreta de falsos positivos
+- existe deuda operativa de UFW: la configuración declarada y las reglas runtime pueden divergir; si la reachability `agents_net -> 172.22.0.1:11440` vuelve a fallar tras reboot o recarga, revisar primero la materialización efectiva en `ufw-user-input`
 
 ## criterio de aceptación
 

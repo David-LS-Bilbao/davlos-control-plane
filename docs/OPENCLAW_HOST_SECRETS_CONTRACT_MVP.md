@@ -27,6 +27,20 @@ En el MVP local actualmente desplegado:
 - el único secreto operativo mínimo es `OPENCLAW_GATEWAY_TOKEN`
 - ese token vive en `/opt/automation/agents/openclaw/compose/.env`, fuera del repo y fuera del workspace del agente
 
+## decisión consolidada para Fase 1
+
+Mientras OpenClaw siga siendo un MVP local sin backend externo y sin auth adicional contra `inference-gateway`:
+
+- `OPENCLAW_GATEWAY_TOKEN` puede permanecer en el `.env` root-owned del runtime
+- no es obligatorio migrarlo todavía a `/etc/davlos/secrets/openclaw`
+- la ruta `/etc/davlos/secrets/openclaw` se mantiene reservada y montada para no romper el contrato host-side futuro
+
+Justificación:
+
+- evita introducir una migración de runtime sensible que no aporta reducción material de superficie en este tramo
+- mantiene el token fuera del repo y fuera del workspace del agente
+- conserva el camino de migración posterior cuando aparezcan secretos de proveedor, auth adicional o requisitos de rotación más fuertes
+
 ## tipos de secretos que siguen reservados para fases posteriores
 
 ### 1. credencial de backend de inferencia externo
@@ -76,5 +90,8 @@ Si el primer arranque usa backend local sin credenciales externas:
 
 ## pendiente antes del deploy
 
-- decidir si el token local del gateway debe migrar a `/etc/davlos/secrets/openclaw`
+- migrar `OPENCLAW_GATEWAY_TOKEN` a `/etc/davlos/secrets/openclaw` cuando:
+  - aparezca un proveedor externo
+  - aparezca auth adicional entre OpenClaw e `inference-gateway`
+  - se exija rotación separada del `.env` del runtime
 - decidir qué nombres finales de archivos se usarán en `/run/secrets/openclaw` si aparecen secretos reales adicionales
