@@ -169,6 +169,31 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(errors)
 
+    def test_policy_store_can_enable_disable_and_ttl(self) -> None:
+        store = PolicyStore(str(self.policy_path))
+        store.set_action_enabled("action.dropzone.write.v1", enabled=False, updated_by="tester", reason="disable")
+        disabled = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(disabled)
+        self.assertEqual(disabled.status, "disabled")
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=30)
+        store.set_action_enabled("action.dropzone.write.v1", enabled=True, updated_by="tester", reason="enable")
+        store.set_action_expiration("action.dropzone.write.v1", expires_at=expiry, updated_by="tester", reason="ttl")
+        enabled = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(enabled)
+        self.assertEqual(enabled.status, "enabled")
+        self.assertIsNotNone(enabled.expires_at)
+
+    def test_policy_store_can_reset_one_shot(self) -> None:
+        store = PolicyStore(str(self.policy_path))
+        store.mark_one_shot_used("action.webhook.trigger.v1", updated_by="tester", reason="consume")
+        consumed = store.get_effective_action_state("action.webhook.trigger.v1")
+        self.assertIsNotNone(consumed)
+        self.assertEqual(consumed.status, "consumed")
+        store.reset_one_shot("action.webhook.trigger.v1", updated_by="tester", reason="reset")
+        reset = store.get_effective_action_state("action.webhook.trigger.v1")
+        self.assertIsNotNone(reset)
+        self.assertEqual(reset.status, "enabled")
+
 
 if __name__ == "__main__":
     unittest.main()

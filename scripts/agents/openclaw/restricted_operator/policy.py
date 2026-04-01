@@ -231,6 +231,62 @@ class PolicyStore:
     ) -> None:
         self.consume_one_shot(action_id, updated_by=updated_by, reason=reason)
 
+    def reset_one_shot(
+        self,
+        action_id: str,
+        *,
+        updated_by: str = "cli",
+        reason: str = "manually_reset_one_shot",
+    ) -> None:
+        declared = self.actions.get(action_id)
+        if declared is None:
+            raise PolicyError(f"unknown action_id: {action_id}")
+        if not declared.one_shot:
+            raise PolicyError(f"action is not one_shot: {action_id}")
+        action_state = self.runtime_state.setdefault(action_id, {})
+        action_state["one_shot_consumed"] = False
+        action_state.pop("consumed_at", None)
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
+        self._persist_runtime_state()
+
+    def set_action_enabled(
+        self,
+        action_id: str,
+        *,
+        enabled: bool,
+        updated_by: str = "cli",
+        reason: str | None = None,
+    ) -> None:
+        declared = self.actions.get(action_id)
+        if declared is None:
+            raise PolicyError(f"unknown action_id: {action_id}")
+        action_state = self.runtime_state.setdefault(action_id, {})
+        action_state["enabled"] = enabled
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason or ("enabled_via_cli" if enabled else "disabled_via_cli")
+        self._persist_runtime_state()
+
+    def set_action_expiration(
+        self,
+        action_id: str,
+        *,
+        expires_at: datetime | None,
+        updated_by: str = "cli",
+        reason: str | None = None,
+    ) -> None:
+        declared = self.actions.get(action_id)
+        if declared is None:
+            raise PolicyError(f"unknown action_id: {action_id}")
+        action_state = self.runtime_state.setdefault(action_id, {})
+        if expires_at is None:
+            action_state["expires_at"] = None
+        else:
+            action_state["expires_at"] = expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason or "updated_expiration_via_cli"
+        self._persist_runtime_state()
+
     def _persist_runtime_state(self) -> None:
         self.state_store_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"actions": self.runtime_state}

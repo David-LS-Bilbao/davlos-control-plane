@@ -12,6 +12,9 @@ INFERENCE_GATEWAY_SERVICE="inference-gateway.service"
 INFERENCE_GATEWAY_LOCAL_ENDPOINT="http://127.0.0.1:11440"
 INFERENCE_GATEWAY_AGENTS_ENDPOINT="http://172.22.0.1:11440/v1"
 OLLAMA_LOCAL_ENDPOINT="http://127.0.0.1:11434"
+OPENCLAW_RESTRICTED_OPERATOR_CLI="${REPO_ROOT}/scripts/agents/openclaw/restricted_operator/cli.py"
+OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO="${REPO_ROOT}/templates/openclaw/restricted_operator_policy.json"
+OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME="${OPENCLAW_RUNTIME_ROOT}/broker/restricted_operator_policy.json"
 
 print_header() {
   printf '\n'
@@ -76,6 +79,43 @@ openclaw_inference_endpoint() {
     fi
   done
   return 1
+}
+
+openclaw_broker_policy_path() {
+  if [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME}" ]]; then
+    printf '%s\n' "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_RUNTIME}"
+    return 0
+  fi
+  if [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO}" ]]; then
+    printf '%s\n' "${OPENCLAW_RESTRICTED_OPERATOR_POLICY_REPO}"
+    return 0
+  fi
+  return 1
+}
+
+openclaw_broker_cli_available() {
+  command -v python3 >/dev/null 2>&1 && [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_CLI}" ]]
+}
+
+openclaw_operator_identity() {
+  if command -v id >/dev/null 2>&1; then
+    id -un 2>/dev/null || printf '%s\n' "${USER:-unknown}"
+    return 0
+  fi
+  printf '%s\n' "${USER:-unknown}"
+}
+
+run_openclaw_broker_cli() {
+  local policy_path
+  if ! openclaw_broker_cli_available; then
+    echo "CLI del broker no disponible en esta sesión." >&2
+    return 1
+  fi
+  if ! policy_path="$(openclaw_broker_policy_path 2>/dev/null)"; then
+    echo "No hay policy del broker visible en esta sesión." >&2
+    return 1
+  fi
+  python3 "${OPENCLAW_RESTRICTED_OPERATOR_CLI}" --policy "${policy_path}" "$@"
 }
 
 show_inference_gateway_summary() {
@@ -378,6 +418,129 @@ show_openclaw_health() {
   show_inference_gateway_summary
 }
 
+show_openclaw_capabilities() {
+  print_header
+  echo "[OpenClaw / capacidades]"
+  echo
+  if policy_path="$(openclaw_broker_policy_path 2>/dev/null)"; then
+    echo "policy_path=${policy_path}"
+  else
+    echo "policy_path=unavailable"
+  fi
+  echo
+  if ! openclaw_broker_cli_available; then
+    echo "CLI del broker no disponible desde esta sesión."
+    return 0
+  fi
+  if ! run_openclaw_broker_cli show; then
+    echo
+    echo "No se pudo leer el estado efectivo del broker desde esta sesión."
+    echo "Posible causa: policy no visible o permisos insuficientes."
+  fi
+}
+
+show_openclaw_capabilities_audit() {
+  print_header
+  echo "[OpenClaw / auditoria de capacidades]"
+  echo
+  if ! openclaw_broker_cli_available; then
+    echo "CLI del broker no disponible desde esta sesión."
+    return 0
+  fi
+  if ! run_openclaw_broker_cli audit-tail --lines 20 | redact_sensitive_output; then
+    echo "No se pudo leer la auditoria del broker desde esta sesión."
+  fi
+}
+
+prompt_with_default() {
+  local prompt="$1"
+  local default_value="$2"
+  local value
+  printf '%s [%s]: ' "${prompt}" "${default_value}"
+  read -r value
+  if [[ -z "${value}" ]]; then
+    value="${default_value}"
+  fi
+  printf '%s\n' "${value}"
+}
+
+prompt_optional() {
+  local prompt="$1"
+  local value
+  printf '%s: ' "${prompt}"
+  read -r value
+  printf '%s\n' "${value}"
+}
+
+apply_openclaw_capability_change() {
+  local subcommand="$1"
+  shift
+  if ! openclaw_broker_cli_available; then
+    echo "CLI del broker no disponible desde esta sesión."
+    return 1
+  fi
+  if run_openclaw_broker_cli "$@" | redact_sensitive_output; then
+    return 0
+  fi
+  echo
+  echo "No se pudo aplicar ${subcommand} desde esta sesión."
+  echo "Posible causa: permisos insuficientes sobre el state store del broker."
+  return 1
+}
+
+openclaw_capability_enable_flow() {
+  local action_id reason operator
+  action_id="$(prompt_optional 'action_id')"
+  if [[ -z "${action_id}" ]]; then
+    echo "action_id requerido."
+    return 1
+  fi
+  operator="$(openclaw_operator_identity)"
+  reason="$(prompt_with_default 'motivo' 'enabled_from_console')"
+  apply_openclaw_capability_change "enable" enable --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+}
+
+openclaw_capability_disable_flow() {
+  local action_id reason operator
+  action_id="$(prompt_optional 'action_id')"
+  if [[ -z "${action_id}" ]]; then
+    echo "action_id requerido."
+    return 1
+  fi
+  operator="$(openclaw_operator_identity)"
+  reason="$(prompt_with_default 'motivo' 'disabled_from_console')"
+  apply_openclaw_capability_change "disable" disable --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+}
+
+openclaw_capability_ttl_flow() {
+  local action_id ttl_minutes reason operator
+  action_id="$(prompt_optional 'action_id')"
+  if [[ -z "${action_id}" ]]; then
+    echo "action_id requerido."
+    return 1
+  fi
+  ttl_minutes="$(prompt_optional 'ttl_minutes')"
+  if [[ -z "${ttl_minutes}" ]]; then
+    echo "ttl_minutes requerido."
+    return 1
+  fi
+  operator="$(openclaw_operator_identity)"
+  reason="$(prompt_with_default 'motivo' 'ttl_enabled_from_console')"
+  apply_openclaw_capability_change "enable-with-ttl" enable --action-id "${action_id}" --ttl-minutes "${ttl_minutes}" --updated-by "${operator}" --reason "${reason}"
+}
+
+openclaw_capability_reset_one_shot_flow() {
+  local action_id reason operator
+  action_id="$(prompt_optional 'action_id')"
+  if [[ -z "${action_id}" ]]; then
+    echo "action_id requerido."
+    return 1
+  fi
+  operator="$(openclaw_operator_identity)"
+  reason="$(prompt_with_default 'motivo' 'reset_one_shot_from_console')"
+  apply_openclaw_capability_change "reset-one-shot" reset-one-shot --action-id "${action_id}" --updated-by "${operator}" --reason "${reason}"
+}
+
 show_help() {
   print_header
   echo "[Ayuda / limites del MVP]"
@@ -389,6 +552,7 @@ show_help() {
 - La fuente de verdad operativa actual está en README.md y evidence/.
 - El inventario funcional mínimo de workflows de n8n sigue en estado PARTIAL por acceso readonly limitado al runtime activo.
 - OpenClaw e inference-gateway se presentan en modo readonly usando Docker/systemd/journal si están disponibles en la sesión.
+- El submenu de capacidades OpenClaw usa la CLI del broker; si no hay permisos suficientes para escribir su state store, degrada con mensaje claro.
 - Start/stop/restart quedan fuera de esta consola MVP.
 EOF
 }
@@ -426,6 +590,21 @@ show_openclaw_menu() {
 2) Logs utiles
 3) Health
 4) Control basico previsto
+5) Capacidades OpenClaw
+9) Volver
+EOF
+}
+
+show_openclaw_capabilities_menu() {
+  print_header
+  cat <<'EOF'
+[OpenClaw / capacidades]
+1) Ver acciones y estado efectivo
+2) Habilitar accion
+3) Deshabilitar accion
+4) Habilitar accion con TTL
+5) Resetear one-shot consumido
+6) Ver auditoria reciente
 9) Volver
 EOF
 }
@@ -465,6 +644,26 @@ run_openclaw_section() {
 - despliegue y rollback: definidos en runbooks del control-plane
 EOF
       ;;
+    5|capabilities)
+      while true; do
+        show_openclaw_capabilities_menu
+        printf 'Selecciona una opcion: '
+        read -r openclaw_cap_choice
+        case "${openclaw_cap_choice}" in
+          1) show_openclaw_capabilities ;;
+          2) openclaw_capability_enable_flow ;;
+          3) openclaw_capability_disable_flow ;;
+          4) openclaw_capability_ttl_flow ;;
+          5) openclaw_capability_reset_one_shot_flow ;;
+          6) show_openclaw_capabilities_audit ;;
+          9) break ;;
+          *)
+            echo "Opcion no valida: ${openclaw_cap_choice}" >&2
+            ;;
+        esac
+        pause_if_interactive
+      done
+      ;;
     9|back) return 1 ;;
     *)
       echo "Opcion no valida: $1" >&2
@@ -482,6 +681,8 @@ run_section() {
     5|evidence) show_evidence_paths ;;
     6|agents) show_agents_zone ;;
     7|openclaw) show_openclaw_status ;;
+    openclaw-capabilities) show_openclaw_capabilities ;;
+    openclaw-capabilities-audit) show_openclaw_capabilities_audit ;;
     8|help) show_help ;;
     openclaw-logs) show_openclaw_logs ;;
     openclaw-health) show_openclaw_health ;;
