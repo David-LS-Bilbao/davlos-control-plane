@@ -1,5 +1,9 @@
 # Telegram OpenClaw Conversational MVP
 
+Nota de alcance:
+
+Este documento describe el MVP conversacional inicial basado solo en reglas. Su valor actual es histórico. El estado operativo posterior fue ampliado por las Fases 16–17 con fallback LLM controlado, `local-first` y mejoras de redacción/explicación sin cambiar el perímetro de seguridad.
+
 ## objetivo
 
 Añadir una capa conversacional pequeña y controlada sobre el bot Telegram existente, sin convertirlo en un chatbot libre ni alterar el modelo de seguridad actual.
