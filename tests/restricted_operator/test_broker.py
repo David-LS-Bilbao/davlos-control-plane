@@ -556,6 +556,32 @@ class BrokerTests(unittest.TestCase):
         reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="quien eres?")
         self.assertIn("Soy el asistente controlado de OpenClaw", reply)
 
+    def test_telegram_prudent_suggestion_is_conservative(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(
+            chat_id="1001",
+            user_id="42",
+            text="que propones para mejorar la operacion sin tocar nada sensible?",
+        )
+        self.assertIn("Propuesta prudente:", reply)
+        self.assertIn("auditoría", reply.lower())
+        self.assertNotIn("restart", reply.lower())
+        self.assertNotIn("habilitar ", reply.lower())
+        self.assertNotIn("action.openclaw.restart.v1", reply.lower())
+
+    def test_telegram_conceptual_explain_status_is_not_generic_status_block(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(
+            chat_id="1001",
+            user_id="42",
+            text="explicame brevemente que significa que haya una capacidad expirada y otra deshabilitada",
+        )
+        self.assertIn("enabled", reply)
+        self.assertIn("disabled", reply)
+        self.assertIn("expired", reply)
+        self.assertIn("one-shot", reply)
+        self.assertNotIn("Estado general de OpenClaw:", reply)
+
     def test_telegram_awake_unknown_phrase_invokes_llm(self) -> None:
         llm = _FakeLLMAdapter(
             response={
@@ -574,6 +600,26 @@ class BrokerTests(unittest.TestCase):
         audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
         self.assertIn("llm_invoked", audit_events)
         self.assertIn("llm_output_validated", audit_events)
+
+    def test_telegram_known_prudent_suggestion_phrase_stays_local_first(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "enable_capability",
+                "action_id": "action.openclaw.restart.v1",
+                "params": {},
+                "needs_confirmation": True,
+                "reply_style": "brief",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(
+            chat_id="1001",
+            user_id="42",
+            text="que propones para mejorar la operacion sin tocar nada sensible?",
+        )
+        self.assertIn("Propuesta prudente:", reply)
+        self.assertEqual(llm.calls, [])
 
     def test_telegram_sleep_mode_does_not_invoke_llm(self) -> None:
         llm = _FakeLLMAdapter()

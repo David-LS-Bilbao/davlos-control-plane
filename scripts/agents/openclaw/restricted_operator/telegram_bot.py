@@ -999,6 +999,8 @@ class TelegramCommandProcessor:
             "por que esta asi",
         }:
             return {"intent": "explain_status", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and self._looks_like_conceptual_explain_status(normalized):
+            return {"intent": "explain_status", "action_id": "telegram.command", "params": {}}
         if assistant_awake and normalized in {
             "que propones",
             "que recomiendas",
@@ -1006,6 +1008,8 @@ class TelegramCommandProcessor:
             "propon acciones",
             "que harias",
         }:
+            return {"intent": "suggest_action", "action_id": "telegram.command", "params": {}}
+        if assistant_awake and self._looks_like_prudent_suggestion_request(normalized):
             return {"intent": "suggest_action", "action_id": "telegram.command", "params": {}}
 
         logs_intent = self._match_logs_intent(normalized)
@@ -1025,6 +1029,17 @@ class TelegramCommandProcessor:
             return reset_intent
 
         return None
+
+    @staticmethod
+    def _looks_like_conceptual_explain_status(normalized: str) -> bool:
+        if "que significa" not in normalized and "explicame" not in normalized:
+            return False
+        return any(token in normalized for token in {"enabled", "disabled", "deshabilitada", "expirada", "expired", "consumida", "one shot"})
+
+    @staticmethod
+    def _looks_like_prudent_suggestion_request(normalized: str) -> bool:
+        suggestion_markers = {"que propones", "que recomiendas", "mejorar la operacion", "sin tocar nada sensible", "sin tocar nada", "prudente"}
+        return any(marker in normalized for marker in suggestion_markers)
 
     def _match_logs_intent(self, normalized: str) -> dict[str, Any] | None:
         if "log" not in normalized:

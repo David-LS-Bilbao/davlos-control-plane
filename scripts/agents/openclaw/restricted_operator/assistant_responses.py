@@ -67,35 +67,48 @@ def render_assistant_explanation(
     expired: list[str],
     consumed: list[str],
 ) -> str:
-    lines = ["Lectura rápida del estado actual:"]
+    lines = [
+        "Lectura prudente de los estados de capacidad:",
+        "- enabled: la capacidad está disponible ahora mismo dentro de policy y permisos.",
+        "- disabled: la capacidad está cerrada de forma explícita hasta que alguien la vuelva a habilitar.",
+        "- expired: estuvo habilitada con tiempo limitado y ese plazo ya terminó.",
+        "- consumed/one-shot: era de un solo uso y ya se gastó; no vuelve a correr hasta reset explícito.",
+    ]
     if not disabled and not consumed and not expired:
-        lines.append("- No veo bloqueos inmediatos en policy.")
+        lines.append("- En este momento no veo señales de cierre o agotamiento en policy.")
     if disabled:
-        lines.append(f"- Hay capacidades deshabilitadas: {', '.join(disabled[:3])}")
+        lines.append(f"- Ahora mismo veo deshabilitadas: {', '.join(disabled[:3])}.")
     if expired:
-        lines.append(f"- Hay capacidades expiradas: {', '.join(expired[:3])}")
+        lines.append(f"- También veo expiradas: {', '.join(expired[:3])}.")
     if consumed:
-        lines.append(f"- Hay one-shot consumidas: {', '.join(consumed[:3])}")
+        lines.append(f"- Y veo one-shot consumidas: {', '.join(consumed[:3])}.")
     lines.append(f"- Operador en sesión: {operator_id}.")
-    lines.append("- Si quieres, puedo proponerte una acción segura dentro de permisos.")
+    lines.append("- Si quieres, puedo seguir con una lectura de auditoría, capacidades o logs permitidos.")
     return "\n".join(lines)
 
 
 def render_assistant_suggestion(*, operator_id: str, states: list[EffectiveActionState]) -> str:
-    for state in states:
-        if state.status == "consumed":
-            return (
-                "Propuesta: revisar si conviene resetear el one-shot consumido.\n"
-                f"Ejemplo: resetea one-shot {state.action_id}"
-            )
-        if state.status in {"disabled", "expired"}:
-            return (
-                "Propuesta: revisar si conviene habilitar temporalmente una capacidad hoy no disponible.\n"
-                f"Ejemplo: habilita {state.action_id} por 15 minutos"
-            )
+    disabled = [state.action_id for state in states if state.status == "disabled"]
+    expired = [state.action_id for state in states if state.status == "expired"]
+    consumed = [state.action_id for state in states if state.status == "consumed"]
+    if disabled or expired or consumed:
+        lines = [
+            "Propuesta prudente:",
+            "- primero revisar auditoría reciente para entender por qué cambió el estado.",
+            "- después revisar capacidades activas/expiradas para confirmar el impacto real.",
+            "- si hace falta más contexto, leer logs permitidos antes de tocar nada sensible.",
+        ]
+        if expired:
+            lines.append(f"- Veo {len(expired)} capacidades expiradas; eso sugiere revisar si el TTL venció como estaba previsto.")
+        if disabled:
+            lines.append(f"- Veo {len(disabled)} capacidades deshabilitadas; lo prudente es confirmar si siguen debiendo estar cerradas.")
+        if consumed:
+            lines.append(f"- Veo {len(consumed)} one-shot consumidas; conviene verificar si ese consumo era esperado.")
+        lines.append("- Solo si el contexto lo justifica tendría sentido plantear un cambio temporal o un reset explícito.")
+        return "\n".join(lines)
     return (
         f"No veo una mutación urgente para {operator_id}. "
-        "La policy parece estable; puedes pedirme estado, capacidades, auditoría o logs."
+        "Lo prudente es seguir con auditoría, capacidades o logs permitidos antes de cambiar nada."
     )
 
 
