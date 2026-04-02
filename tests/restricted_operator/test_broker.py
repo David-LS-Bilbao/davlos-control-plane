@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import os
 import sys
 import tempfile
 import threading
@@ -21,6 +22,7 @@ import cli as broker_cli  # noqa: E402
 from models import BrokerRequest  # noqa: E402
 from policy import PolicyStore  # noqa: E402
 from telegram_bot import TelegramCommandProcessor  # noqa: E402
+from llm_adapter import LLMAdapter  # noqa: E402
 
 
 class _OkHandler(BaseHTTPRequestHandler):
@@ -44,6 +46,29 @@ class _FakeTelegramClient:
 
     def send_message(self, *, chat_id: str, text: str) -> None:
         self.sent_messages.append((chat_id, text))
+
+
+class _FakeLLMAdapter:
+    def __init__(self, *, enabled: bool = True, response: dict | None = None, error: Exception | None = None) -> None:
+        self.enabled = enabled
+        self.response = response or {
+            "intent": "status",
+            "action_id": "telegram.command",
+            "params": {},
+            "needs_confirmation": False,
+            "reply_style": "brief",
+        }
+        self.error = error
+        self.calls: list[str] = []
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def interpret(self, *, text: str) -> dict:
+        self.calls.append(text)
+        if self.error is not None:
+            raise self.error
+        return dict(self.response)
 
 
 class BrokerTests(unittest.TestCase):
@@ -271,6 +296,69 @@ class BrokerTests(unittest.TestCase):
         self.assertIsNotNone(reset)
         self.assertEqual(reset.status, "enabled")
 
+    def test_policy_store_refreshes_runtime_state_for_long_lived_instances(self) -> None:
+        observer = PolicyStore(str(self.policy_path))
+        writer = PolicyStore(str(self.policy_path))
+
+        writer.set_action_enabled(
+            "action.dropzone.write.v1",
+            enabled=False,
+            updated_by="tester",
+            reason="refresh_visibility",
+        )
+
+        effective = observer.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "disabled")
+
+    def test_concurrent_runtime_state_mutations_do_not_lose_updates(self) -> None:
+        first_store = PolicyStore(str(self.policy_path))
+        second_store = PolicyStore(str(self.policy_path))
+        start_barrier = threading.Barrier(2)
+        errors: list[Exception] = []
+
+        def disable_dropzone() -> None:
+            try:
+                start_barrier.wait()
+                first_store.set_action_enabled(
+                    "action.dropzone.write.v1",
+                    enabled=False,
+                    updated_by="tester-a",
+                    reason="concurrent_disable",
+                )
+            except Exception as exc:  # pragma: no cover - defensive path for thread failures
+                errors.append(exc)
+
+        def enable_restart() -> None:
+            try:
+                start_barrier.wait()
+                second_store.set_action_enabled(
+                    "action.openclaw.restart.v1",
+                    enabled=True,
+                    updated_by="tester-b",
+                    reason="concurrent_enable",
+                )
+            except Exception as exc:  # pragma: no cover - defensive path for thread failures
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=disable_dropzone),
+            threading.Thread(target=enable_restart),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        store = PolicyStore(str(self.policy_path))
+        dropzone = store.get_effective_action_state("action.dropzone.write.v1")
+        restart = store.get_effective_action_state("action.openclaw.restart.v1")
+        self.assertIsNotNone(dropzone)
+        self.assertIsNotNone(restart)
+        self.assertEqual(dropzone.status, "disabled")
+        self.assertEqual(restart.status, "enabled")
+
     def test_authorized_operator_can_change_policy(self) -> None:
         rc = broker_cli.set_enabled(
             str(self.policy_path),
@@ -457,6 +545,152 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Estado general de OpenClaw:", reply)
         audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
         self.assertIn("response_generated", audit_events)
+
+    def test_telegram_awake_mode_accepts_capabilities_query_with_punctuation(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="que puedes hacer?")
+        self.assertIn("Capacidades activas y visibles para este operador:", reply)
+
+    def test_telegram_awake_mode_accepts_identity_query(self) -> None:
+        self.telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="quien eres?")
+        self.assertIn("Soy el asistente controlado de OpenClaw", reply)
+
+    def test_telegram_awake_unknown_phrase_invokes_llm(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "status",
+                "action_id": "telegram.command",
+                "params": {},
+                "needs_confirmation": False,
+                "reply_style": "brief",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="dame una lectura rápida de cómo pinta todo hoy")
+        self.assertIn("Estado general de OpenClaw:", reply)
+        self.assertEqual(llm.calls, ["dame una lectura rápida de cómo pinta todo hoy"])
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("llm_invoked", audit_events)
+        self.assertIn("llm_output_validated", audit_events)
+
+    def test_telegram_sleep_mode_does_not_invoke_llm(self) -> None:
+        llm = _FakeLLMAdapter()
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="dame una lectura rápida de cómo pinta todo hoy")
+        self.assertIn("No entendí la intención", reply)
+        self.assertEqual(llm.calls, [])
+
+    def test_telegram_slash_command_does_not_invoke_llm(self) -> None:
+        llm = _FakeLLMAdapter()
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="/status")
+        self.assertIn("actions_total=", reply)
+        self.assertEqual(llm.calls, [])
+
+    def test_telegram_confirmation_does_not_invoke_llm(self) -> None:
+        llm = _FakeLLMAdapter()
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="si")
+        self.assertIn("Acción aplicada.", reply)
+        self.assertEqual(llm.calls, [])
+
+    def test_telegram_llm_invalid_output_falls_back_safely(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "status",
+                "action_id": "telegram.command",
+                "params": {},
+                "needs_confirmation": False,
+                "reply_style": "brief",
+                "extra": "forbidden",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
+        self.assertIn("No puedo interpretar esa frase de forma segura.", reply)
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("llm_output_rejected", audit_events)
+
+    def test_telegram_llm_rejects_intent_outside_allowlist(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "run_shell",
+                "action_id": "telegram.command",
+                "params": {},
+                "needs_confirmation": False,
+                "reply_style": "brief",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
+        self.assertIn("No puedo interpretar esa frase de forma segura.", reply)
+        audit_events = [json.loads(line)["event"] for line in self.audit_path.read_text().strip().splitlines()]
+        self.assertIn("llm_output_rejected", audit_events)
+
+    def test_telegram_llm_valid_read_still_obeys_auth(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "audit_tail",
+                "action_id": "telegram.command",
+                "params": {},
+                "needs_confirmation": False,
+                "reply_style": "brief",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="2002", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="2002", user_id="42", text="cuéntame lo último importante")
+        self.assertEqual(reply, "Operador no autorizado para consultar auditoría.")
+        self.assertEqual(llm.calls, ["cuéntame lo último importante"])
+
+    def test_telegram_llm_valid_mutation_requires_confirmation(self) -> None:
+        llm = _FakeLLMAdapter(
+            response={
+                "intent": "disable_capability",
+                "action_id": "action.dropzone.write.v1",
+                "params": {},
+                "needs_confirmation": True,
+                "reply_style": "brief",
+            }
+        )
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="quita acceso de escritura al dropzone por ahora")
+        self.assertIn("Acción interpretada:", reply)
+        store = PolicyStore(str(self.policy_path))
+        effective = store.get_effective_action_state("action.dropzone.write.v1")
+        self.assertIsNotNone(effective)
+        self.assertEqual(effective.status, "enabled")
+
+    def test_telegram_disabled_llm_preserves_existing_fallback(self) -> None:
+        llm = _FakeLLMAdapter(enabled=False)
+        telegram = TelegramCommandProcessor(str(self.policy_path), api_client=self.telegram_client, llm_adapter=llm)
+        telegram.handle_text(chat_id="1001", user_id="42", text="/wake")
+        reply = telegram.handle_text(chat_id="1001", user_id="42", text="haz algo inteligente con el sistema")
+        self.assertIn("No puedo interpretar esa frase de forma segura.", reply)
+        self.assertEqual(llm.calls, [])
+
+    def test_llm_adapter_ignores_invalid_timeout_when_disabled(self) -> None:
+        previous_enabled = os.environ.get("OPENCLAW_LLM_ENABLED")
+        previous_timeout = os.environ.get("OPENCLAW_LLM_TIMEOUT_SECONDS")
+        self.addCleanup(self._restore_env_var, "OPENCLAW_LLM_ENABLED", previous_enabled)
+        self.addCleanup(self._restore_env_var, "OPENCLAW_LLM_TIMEOUT_SECONDS", previous_timeout)
+        os.environ["OPENCLAW_LLM_ENABLED"] = "false"
+        os.environ["OPENCLAW_LLM_TIMEOUT_SECONDS"] = "invalid"
+        adapter = LLMAdapter()
+        self.assertFalse(adapter.is_enabled())
+
+    @staticmethod
+    def _restore_env_var(key: str, value: str | None) -> None:
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
     def test_telegram_conversational_mutation_requires_confirmation(self) -> None:
         reply = self.telegram.handle_text(chat_id="1001", user_id="42", text="deshabilita action.dropzone.write.v1")
