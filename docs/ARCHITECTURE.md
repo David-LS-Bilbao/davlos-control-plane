@@ -66,17 +66,28 @@ Rutas operativas confirmadas actualmente:
 - Postgres prod:
   - `/opt/verity-postgres/docker-compose.yml`
 - n8n:
-  - `/root/docker-compose.yaml`
-  - `/root/n8n.env`
-  - `/root/local-files`
+  - runtime observado: `compose-n8n-1`
+  - bind mount confirmado: `/opt/automation/n8n/local-files -> /files`
+  - publicación local validada: `127.0.0.1:5678`
+  - red validada: `verity_network`
   - volumen Docker `root_n8n_data`
+- OpenClaw:
+  - `/opt/automation/agents/openclaw`
+  - `/etc/davlos/secrets/openclaw`
+  - red Docker `agents_net`
+  - bind host `127.0.0.1:18789`
+- inference-gateway:
+  - `/opt/automation/inference-gateway`
+  - unidad `systemd` `inference-gateway.service`
+  - endpoint local `127.0.0.1:11440`
 
 Conclusión de arquitectura actual:
 
 - La producción y el staging de Verity todavía residen en un layout heredado bajo `/opt/verity-stack`.
 - La infraestructura PostgreSQL ya está fuera de `/root`, pero no bajo la zona objetivo `/opt/infra`.
-- `n8n` sigue fuera del layout objetivo y mantiene dependencia operativa explícita de `/root`.
-- La arquitectura objetivo queda definida, pero aún no está materializada en producción.
+- `n8n` ya muestra topología post-recuperación parcialmente alineada con `/opt`, pero la evidencia readonly reciente no debe usarse para afirmar que toda la definición activa haya dejado atrás referencias históricas a `/root`.
+- `OpenClaw` e `inference-gateway` ya materializan parte de la zona objetivo de automatización separada.
+- La arquitectura objetivo queda definida, pero no debe confundirse con un cierre completo del hardening ni de la transición documental.
 
 ## Mapeo formal actual -> objetivo
 
@@ -84,15 +95,18 @@ Conclusión de arquitectura actual:
 - `/opt/verity-stack/staging/verity-news-staging` -> `/opt/apps/staging/verity-news`
 - `/opt/verity-stack/npm` -> `/opt/infra/npm`
 - `/opt/verity-postgres` -> `/opt/infra/postgres`
-- `/root/docker-compose.yaml` -> probable futuro dominio documental de `/opt/automation/n8n`
-- `/root/n8n.env` -> probable futuro dominio operativo de `/opt/automation/n8n`
-- `/root/local-files` -> probable futuro dominio operativo de `/opt/automation/n8n`
+- `compose-n8n-1` + `verity_network` + `root_n8n_data` -> runtime validado de `n8n` pendiente de trazabilidad completa sobre `compose` y `env`
+- `/opt/automation/n8n/local-files` -> bind mount operativo confirmado de `n8n`
 - volumen Docker `root_n8n_data` -> persistencia futura a definir para `/opt/automation/n8n`
+- `/opt/automation/agents/openclaw` -> runtime operativo de `OpenClaw`
+- `/opt/automation/inference-gateway` -> boundary host-side para inferencia local
+- `/etc/davlos/secrets/openclaw` -> contrato host-side de secretos para agentes
 
 Notas:
 
-- El mapeo de `n8n` es objetivo de diseño, no estado ejecutado.
-- No hay evidencia confirmada en esta fase sobre WireGuard ni sobre cargas reales para `/opt/apps/lab`, `/opt/automation/agents` y `/opt/automation/policies`.
+- El estado de `n8n` debe leerse como mixto: hay evidencias válidas de runtime y de bind mount bajo `/opt`, pero no debe darse por cerrada la trazabilidad final de `compose` y `env` solo con este documento.
+- `OpenClaw` e `inference-gateway` sí tienen evidencia operativa reciente en esta rama, pero su baseline sigue siendo MVP y no hardening final.
+- No hay evidencia confirmada en esta fase sobre WireGuard ni sobre cargas reales para `/opt/apps/lab`.
 
 ## Reglas de transición para fases posteriores
 
@@ -104,9 +118,10 @@ Notas:
 
 ## Bloqueos conocidos
 
-- `n8n` depende de rutas activas bajo `/root`, por lo que no debe considerarse alineado al layout objetivo.
+- `n8n` mantiene deuda de trazabilidad entre referencias históricas a `/root` y runtime observado reciente bajo `/opt`.
 - No se debe inferir que una ruta objetivo exista ya solo porque esté definida documentalmente.
-- No hay validación en este documento de backups restaurables por servicio.
+- La allowlist real de egress para `agents_net` todavía no está aplicada.
+- No hay validación en este documento de backups restaurables por servicio ni de pruebas funcionales completas de OpenClaw.
 
 Referencia operativa asociada:
 

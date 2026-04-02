@@ -1,0 +1,34 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 18789,
+    "bind": "lan",
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "davlos-local/qwen2.5:3b"
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "davlos-local": {
+        "baseUrl": "http://172.22.0.1:11440/v1",
+        "apiKey": "${INFERENCE_GATEWAY_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "qwen2.5:3b",
+            "name": "qwen2.5:3b"
+          }
+        ]
+      }
+    }
+  }
+}

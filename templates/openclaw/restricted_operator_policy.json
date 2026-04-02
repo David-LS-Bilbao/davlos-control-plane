@@ -1,0 +1,162 @@
+{
+  "broker": {
+    "bind_host": "127.0.0.1",
+    "bind_port": 18890,
+    "audit_log_path": "/opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl",
+    "state_store_path": "/opt/automation/agents/openclaw/broker/state/restricted_operator_state.json",
+    "dropzone_dir": "/opt/automation/agents/openclaw/dropzone",
+    "max_tail_lines": 200,
+    "max_write_bytes": 4096
+  },
+  "actions": {
+    "action.health.general.v1": {
+      "enabled": true,
+      "mode": "readonly",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_readonly",
+      "updated_by": "repo",
+      "permission": "operator.read",
+      "description": "Health general fijo del boundary OpenClaw/inference-gateway"
+    },
+    "action.logs.read.v1": {
+      "enabled": true,
+      "mode": "readonly",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_readonly",
+      "updated_by": "repo",
+      "permission": "operator.read",
+      "description": "Lectura de logs permitidos por stream_id"
+    },
+    "action.webhook.trigger.v1": {
+      "enabled": true,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_restricted",
+      "updated_by": "repo",
+      "permission": "operator.trigger",
+      "description": "Disparo de endpoint controlado por target_id"
+    },
+    "action.openclaw.restart.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "requires_dedicated_root_owned_wrapper",
+      "updated_by": "repo",
+      "permission": "operator.control",
+      "description": "Reservado para wrapper root-owned futuro; no habilitado en MVP"
+    },
+    "action.dropzone.write.v1": {
+      "enabled": true,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "baseline_restricted",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Escritura acotada en drop-zone controlada"
+    }
+  },
+  "operator_auth": {
+    "roles": {
+      "viewer": [
+        "policy.read",
+        "operator.read"
+      ],
+      "operator": [
+        "policy.read",
+        "policy.mutate",
+        "operator.read",
+        "operator.trigger",
+        "operator.write"
+      ],
+      "admin": [
+        "policy.read",
+        "policy.mutate",
+        "operator.audit",
+        "operator.read",
+        "operator.trigger",
+        "operator.write",
+        "operator.control"
+      ]
+    },
+    "operators": {
+      "root": {
+        "role": "admin",
+        "enabled": true,
+        "display_name": "Host root operator",
+        "reason": "local_vps_admin"
+      },
+      "davlos-operator": {
+        "role": "operator",
+        "enabled": true,
+        "display_name": "DAVLOS delegated operator",
+        "reason": "interactive_console_operator"
+      },
+      "davlos-viewer": {
+        "role": "viewer",
+        "enabled": true,
+        "display_name": "DAVLOS readonly viewer",
+        "reason": "readonly_inspection"
+      }
+    }
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token_env": "OPENCLAW_TELEGRAM_BOT_TOKEN",
+    "api_base_url": "https://api.telegram.org",
+    "poll_timeout_seconds": 20,
+    "audit_tail_lines": 10,
+    "offset_store_path": "/opt/automation/agents/openclaw/broker/state/telegram_offset.json",
+    "runtime_status_path": "/opt/automation/agents/openclaw/broker/state/telegram_runtime_status.json",
+    "rate_limit_window_seconds": 30,
+    "rate_limit_max_requests": 6,
+    "max_command_length": 512,
+    "allowed_chats": {
+      "123456789": {
+        "operator_id": "davlos-operator",
+        "enabled": true,
+        "display_name": "Primary private operator chat",
+        "reason": "replace_with_real_private_chat_id"
+      }
+    },
+    "allowed_users": {
+      "987654321": {
+        "operator_id": "davlos-viewer",
+        "enabled": false,
+        "display_name": "Optional readonly fallback user",
+        "reason": "replace_or_remove"
+      }
+    }
+  },
+  "health_checks": {
+    "openclaw_ui": {
+      "url": "http://127.0.0.1:18789/",
+      "expect_status": 200
+    },
+    "inference_gateway_healthz": {
+      "url": "http://127.0.0.1:11440/healthz",
+      "expect_status": 200
+    }
+  },
+  "log_streams": {
+    "openclaw_runtime": {
+      "path": "/opt/automation/agents/openclaw/logs/openclaw-current.log",
+      "tail_lines_default": 50
+    },
+    "restricted_operator_audit": {
+      "path": "/opt/automation/agents/openclaw/broker/audit/restricted_operator.jsonl",
+      "tail_lines_default": 50
+    }
+  },
+  "webhook_targets": {
+    "openclaw_controlled": {
+      "url": "http://127.0.0.1:18789/__davlos__/restricted-operator-hook",
+      "method": "POST",
+      "timeout_seconds": 5
+    }
+  }
+}
