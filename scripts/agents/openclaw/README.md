@@ -1,10 +1,35 @@
-# OpenClaw runtime staging scripts
+# OpenClaw runtime staging, prechecks y deploy
 
 ## propósito
 
-Estos scripts preparan y validan el scaffold mínimo del runtime de OpenClaw sin desplegar contenedores ni tocar servicios existentes.
+Este directorio mezcla tres tipos de scripts distintos:
 
-## qué preparan
+- staging del runtime;
+- validación previa;
+- deploy real.
+
+No deben tratarse como equivalentes.
+
+## tramos documentados
+
+### staging y prechecks
+
+`10_stage_runtime.sh` y `20_validate_runtime_readiness.sh` preparan y validan scaffold mínimo del runtime sin desplegar contenedores ni tocar servicios existentes.
+
+### deploy real
+
+`30_first_local_deploy.sh` ya no es un script de staging:
+
+- usa Docker;
+- puede crear `agents_net`;
+- copia artefactos al runtime efectivo;
+- genera o actualiza `.env`;
+- despliega `openclaw-gateway`;
+- ejecuta validaciones post-deploy.
+
+Por tanto, no debe ejecutarse como si fuera un paso inocuo de preparación.
+
+## qué preparan los tramos de staging
 
 - layout base bajo `/opt/automation/agents/openclaw`
 - ruta vacía de secretos en `/etc/davlos/secrets/openclaw`
@@ -13,7 +38,7 @@ Estos scripts preparan y validan el scaffold mínimo del runtime de OpenClaw sin
   - `templates/openclaw/openclaw.env.example`
   - `templates/openclaw/openclaw.json.example`
 
-## qué NO hacen
+## qué NO hacen `10_stage_runtime.sh` y `20_validate_runtime_readiness.sh`
 
 - no crean `agents_net`
 - no arrancan contenedores
@@ -48,12 +73,34 @@ Se elige la opción A: no crear `config/openclaw.json` en este tramo y dejarlo m
 - distingue entre `config/openclaw.json.example` y `config/openclaw.json`
 - no depende de Docker
 
-## cómo ejecutarlos
+### `30_first_local_deploy.sh`
+
+- requiere `root` o `sudo`
+- usa Docker, `curl` y `openssl`
+- crea o valida `agents_net`
+- escribe sobre runtime efectivo bajo `/opt/automation/agents/openclaw`
+- despliega `openclaw-gateway`
+- debe considerarse deploy real con impacto potencial sobre runtime vivo
+
+## cómo ejecutar staging y prechecks
 
 ```bash
 sudo bash /opt/control-plane/scripts/agents/openclaw/10_stage_runtime.sh
 sudo bash /opt/control-plane/scripts/agents/openclaw/20_validate_runtime_readiness.sh
 ```
+
+## antes de cualquier deploy real
+
+Antes de plantear `30_first_local_deploy.sh`:
+
+- revisar `docs/OPENCLAW_RUNTIME_DRIFT_2026-04-08.md`;
+- ejecutar `scripts/agents/openclaw/40_runtime_drift_readonly.sh`;
+- confirmar que no existe drift material repo/runtime que vuelva inseguro un redeploy;
+- recordar que el runtime observado usa ownership mixto deliberado:
+  - `root` conserva `compose`, `broker`, `dropzone` y secretos;
+  - `devops` posee `config`, `state` y `logs`.
+
+No usar este directorio para justificar redeploys ciegos.
 
 ## estados del validador
 
