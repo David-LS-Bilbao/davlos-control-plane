@@ -1,0 +1,2 @@
+Cmnd_Alias DAVLOS_OPENCLAW_READONLY = /usr/local/sbin/davlos-openclaw-readonly runtime_summary, /usr/local/sbin/davlos-openclaw-readonly broker_state_console, /usr/local/sbin/davlos-openclaw-readonly broker_audit_recent, /usr/local/sbin/davlos-openclaw-readonly telegram_runtime_status, /usr/local/sbin/davlos-openclaw-readonly operational_logs_recent
+devops ALL=(root) NOPASSWD: DAVLOS_OPENCLAW_READONLY
