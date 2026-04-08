@@ -24,6 +24,7 @@ No sustituye la evidencia operativa validada en runtime.
 - existe broker restringido operativo en host con policy viva y auditoría
 - existe Telegram persistente operativo como canal corto, con degradación/intermitencia de polling ya observada
 - existe helper readonly host-side y debe tratarse como vía preferente de observabilidad controlada
+- el boundary OpenClaw ya puede tratarse como `baseline prudente validado` por verificación readonly host-side
 - la consola `DAVLOS VPN Console` expone observabilidad readonly para `OpenClaw` e `inference-gateway`
 
 ## precedencia documental
@@ -145,6 +146,7 @@ Juicio operativo:
 - broker restringido y Telegram ya forman parte del runtime operativo observado
 - cambios operativos posteriores deben ser pequeños, reversibles y con evidencia
 - cualquier intervención posterior debe pasar antes por revisión explícita de drift repo/runtime
+- la referencia documental de cierre de baseline prudente vigente es `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 ## riesgos residuales conocidos
 
@@ -182,5 +184,6 @@ Juicio operativo:
 - `runbooks/OPENCLAW_DEPLOY_MVP.md`
 - `runbooks/OPENCLAW_ROLLBACK_MVP.md`
 - `docs/OPENCLAW_RUNTIME_DRIFT_2026-04-08.md`
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 - `docs/reports/OPENCLAW_BOUNDARY_RUNTIME_FIX_2026-04-01.md`
 - `docs/reports/OPENCLAW_AGENTS_NET_REACHABILITY_FIX_2026-04-01.md`

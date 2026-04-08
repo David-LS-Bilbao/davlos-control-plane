@@ -11,6 +11,7 @@ Fuente de verdad operativa del VPS DAVLOS.
 - La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
 - OpenClaw ya no está solo en baseline MVP: el boundary opera en host con `inference-gateway`, broker restringido, Telegram persistente y helper readonly.
+- OpenClaw queda además documentado como `baseline prudente validado` por validación readonly host-side.
 - La DAVLOS VPN Console ya actúa como CLI operativo del boundary con dashboard, broker/capacidades, seguridad guiada y diagnóstico.
 
 ## Objetivo actual
@@ -80,6 +81,8 @@ Checkpoint actual:
 - helper readonly host-side para visibilidad runtime:
   - `/usr/local/sbin/davlos-openclaw-readonly`
   - `/etc/sudoers.d/davlos-openclaw-readonly`
+- baseline documental vigente:
+  - `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 - ownership observado en runtime:
   - `root` conserva `compose`, `broker`, `dropzone` y secretos
   - `devops` posee `config`, `state` y `logs`
@@ -146,9 +149,14 @@ La referencia documental explícita para este punto es:
 - `docs/TELEGRAM_OPENCLAW_CONVERSATIONAL_MVP.md`
 - `docs/TELEGRAM_OPENCLAW_LLM_FALLBACK_PHASE_16_17.md`
 - `docs/OPENCLAW_READONLY_HELPER_INSTALL.md`
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 Nota:
 Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: boundary operativo con `inference-gateway`, broker restringido con policy viva y auditoría, Telegram persistente como canal corto, modo conversacional controlado `local-first`, fallback LLM acotado a `wake` y helper readonly host-side para inspección segura desde consola. El hardening final de egress sigue documentado por fases y no se declara cerrado en este `README`.
+
+La referencia documental de cierre de baseline prudente para OpenClaw es:
+
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 ## Regla base
 
