@@ -15,6 +15,15 @@ class StateStoreError(ValueError):
 
 
 class LockedJsonStateStore:
+    """
+    Serialize runtime state JSON updates behind a sidecar lock and atomic replace.
+
+    Operational assumption: every process allowed to mutate this state can open the
+    same lock file under a homogeneous Unix permission model. This component does
+    not try to reconcile heterogeneous writers via chmod/chown; that must be fixed
+    by the runtime ownership model chosen at deploy time.
+    """
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         # The lock lives next to the JSON because os.replace swaps the target inode.
@@ -50,7 +59,12 @@ class LockedJsonStateStore:
     @contextmanager
     def _exclusive_lock(self):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        except PermissionError as exc:
+            raise StateStoreError(
+                f"cannot open runtime state lock: {self.lock_path}; expected same writer identity or shared permissions"
+            ) from exc
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
@@ -84,6 +98,9 @@ class LockedJsonStateStore:
     def _write_unlocked(self, payload: dict[str, Any]) -> None:
         serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         tmp_path: Path | None = None
+        # Preserve the previous mode when possible. Owner/group still follow the
+        # current writer after os.replace, so deployments should keep writer
+        # identity or permissions homogeneous.
         existing_mode = self._existing_mode()
         try:
             with tempfile.NamedTemporaryFile(

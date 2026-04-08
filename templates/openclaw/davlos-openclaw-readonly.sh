@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -192,7 +193,8 @@ def broker_audit_recent(config, lines: int):
         print("scope=restricted_operator_audit lines=0")
         print("no_events=yes")
         return
-    raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        raw_lines = [line.rstrip("\n") for line in deque(handle, maxlen=lines)]
     print(f"policy_source={config['policy_source']}")
     print(f"scope=restricted_operator_audit lines={len(raw_lines)}")
     for line in raw_lines:
@@ -288,6 +290,8 @@ telegram_runtime_status() {
 
 operational_logs_recent() {
   local unit output
+  # Fixed allowlist by design: recent operational context without granting
+  # arbitrary journald access through sudo.
   local allowed_units=(
     "openclaw-telegram-bot.service"
     "inference-gateway.service"
