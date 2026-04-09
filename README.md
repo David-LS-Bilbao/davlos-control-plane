@@ -11,6 +11,7 @@ Fuente de verdad operativa del VPS DAVLOS.
 - La suboperación 4.2 quedó recuperada y no es bloqueo activo.
 - Sin secretos en este repositorio.
 - OpenClaw ya no está solo en baseline MVP: el boundary opera en host con `inference-gateway`, broker restringido, Telegram persistente y helper readonly.
+- OpenClaw queda además documentado como `baseline prudente validado` por validación readonly host-side.
 - La DAVLOS VPN Console ya actúa como CLI operativo del boundary con dashboard, broker/capacidades, seguridad guiada y diagnóstico.
 
 ## Objetivo actual
@@ -80,6 +81,12 @@ Checkpoint actual:
 - helper readonly host-side para visibilidad runtime:
   - `/usr/local/sbin/davlos-openclaw-readonly`
   - `/etc/sudoers.d/davlos-openclaw-readonly`
+- baseline documental vigente:
+  - `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
+- ownership observado en runtime:
+  - `root` conserva `compose`, `broker`, `dropzone` y secretos
+  - `devops` posee `config`, `state` y `logs`
+  - este reparto debe tratarse como deliberado hasta que exista una decisión posterior respaldada por evidencia y rollback
 - superficie operativa actual:
   - dashboard de consola con estado de host, broker, Telegram y runtime
   - consola reorganizada por runtime, broker, seguridad, evidencias y diagnóstico
@@ -92,6 +99,33 @@ Checkpoint actual:
   - no hay UI web final de control; la operación principal sigue en consola + Telegram
   - start/stop/restart no se exponen directamente desde la consola
   - el hardening final de egress no se declara cerrado en este README
+
+## Distinción operativa obligatoria
+
+Para OpenClaw, este repositorio debe distinguir siempre entre tres planos:
+
+- documentación y diseño objetivo;
+- plantillas y scripts de despliegue versionados;
+- estado operativo real observado en host.
+
+Las plantillas del repo no deben leerse automáticamente como espejo exacto del runtime vivo.
+
+Ejemplos ya conocidos de drift que exigen prudencia:
+
+- el publish northbound observado del gateway es loopback-only en `127.0.0.1:18789`;
+- `templates/openclaw/openclaw.json.example` mantiene `bind: "lan"` y hoy debe tratarse como drift contractual pendiente, no como permiso para corregir el runtime a ciegas;
+- `scripts/agents/openclaw/30_first_local_deploy.sh` es despliegue real y no mero staging;
+- el helper readonly versionado ya expone cinco modos, incluido `operational_logs_recent`.
+
+Mientras exista drift material repo/host:
+
+- no redeployar a ciegas;
+- no sobrescribir runtime vivo con plantillas por reflejo;
+- no asumir que una plantilla sensible ya representa el estado efectivo del VPS.
+
+La referencia documental explícita para este punto es:
+
+- `docs/OPENCLAW_RUNTIME_DRIFT_2026-04-08.md`
 
 ## Documentos clave
 
@@ -115,9 +149,14 @@ Checkpoint actual:
 - `docs/TELEGRAM_OPENCLAW_CONVERSATIONAL_MVP.md`
 - `docs/TELEGRAM_OPENCLAW_LLM_FALLBACK_PHASE_16_17.md`
 - `docs/OPENCLAW_READONLY_HELPER_INSTALL.md`
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 Nota:
 Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: boundary operativo con `inference-gateway`, broker restringido con policy viva y auditoría, Telegram persistente como canal corto, modo conversacional controlado `local-first`, fallback LLM acotado a `wake` y helper readonly host-side para inspección segura desde consola. El hardening final de egress sigue documentado por fases y no se declara cerrado en este `README`.
+
+La referencia documental de cierre de baseline prudente para OpenClaw es:
+
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 ## Regla base
 

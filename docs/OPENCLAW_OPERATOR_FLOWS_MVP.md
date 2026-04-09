@@ -22,7 +22,7 @@ Resultado:
 - la consola muestra estado efectivo legible
 - el operador ve `status`, `mode`, `allowed`, `permission`
 - cuando aplica, también ve `expires_at`, `one_shot` y `consumed`
-- con el helper readonly instalado, la vista sale del runtime real aunque la sesión no pueda leer `/opt/automation` directamente
+- con el helper readonly instalado, la vista puede seguir saliendo del runtime real cuando el problema es de permisos de lectura sobre `/opt/automation`
 
 Valor operativo:
 - sirve como vista rápida diaria del boundary de capacidades
@@ -30,7 +30,7 @@ Valor operativo:
 
 Fricción residual:
 - si se quiere ver trazabilidad real, hay que mirar el audit log activo; la plantilla del repo sigue siendo declarativa
-- sin helper readonly o permisos equivalentes, la visibilidad del runtime puede degradarse
+- sin helper readonly o permisos equivalentes, la visibilidad del runtime puede degradarse; y si el fallo no es de permisos, la consola no siempre puede recuperar la vista real
 
 ### 2. Habilitar una capacidad con TTL
 
@@ -89,6 +89,7 @@ Fricción residual:
 
 - La consola ya es suficiente para operar capacidades OpenClaw sin otra UI.
 - El helper readonly reduce mucho la fricción entre policy declarativa y runtime real.
+- El helper readonly sigue siendo una superficie cerrada; no equivale a abrir `journald` general ni `/opt/automation` completo.
 - La policy viva con TTL y one-shot cubre el ciclo básico de apertura, consumo y cierre.
 - Telegram aporta valor como canal corto de consulta/ejecución.
 - La trazabilidad mínima es suficiente para una operación MVP disciplinada.

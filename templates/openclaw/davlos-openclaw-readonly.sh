@@ -2,14 +2,16 @@
 set -euo pipefail
 
 readonly DATE_BIN="/usr/bin/date"
+readonly JOURNALCTL_BIN="/usr/bin/journalctl"
 readonly PYTHON_BIN="/usr/bin/python3"
 
 readonly RUNTIME_POLICY_PATH="/opt/automation/agents/openclaw/broker/restricted_operator_policy.json"
 readonly FALLBACK_POLICY_PATH="/opt/control-plane/templates/openclaw/restricted_operator_policy.json"
 readonly DEFAULT_AUDIT_LINES="20"
+readonly DEFAULT_UNIT_LOG_LINES="6"
 
 usage() {
-  echo "Usage: $0 {runtime_summary|broker_state_console|broker_audit_recent|telegram_runtime_status}" >&2
+  echo "Usage: $0 {runtime_summary|broker_state_console|broker_audit_recent|telegram_runtime_status|operational_logs_recent}" >&2
   exit 64
 }
 
@@ -21,7 +23,7 @@ require_root() {
 }
 
 require_deps() {
-  for bin in "${DATE_BIN}" "${PYTHON_BIN}"; do
+  for bin in "${DATE_BIN}" "${JOURNALCTL_BIN}" "${PYTHON_BIN}"; do
     if [[ ! -x "${bin}" ]]; then
       echo "ERROR: missing required binary: ${bin}" >&2
       exit 1
@@ -43,6 +45,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -190,7 +193,8 @@ def broker_audit_recent(config, lines: int):
         print("scope=restricted_operator_audit lines=0")
         print("no_events=yes")
         return
-    raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        raw_lines = [line.rstrip("\n") for line in deque(handle, maxlen=lines)]
     print(f"policy_source={config['policy_source']}")
     print(f"scope=restricted_operator_audit lines={len(raw_lines)}")
     for line in raw_lines:
@@ -284,6 +288,30 @@ telegram_runtime_status() {
   run_python_helper "telegram_runtime_status"
 }
 
+operational_logs_recent() {
+  local unit output
+  # Fixed allowlist by design: recent operational context without granting
+  # arbitrary journald access through sudo.
+  local allowed_units=(
+    "openclaw-telegram-bot.service"
+    "inference-gateway.service"
+    "obsidian-vault-backup.service"
+    "obsidian-vault-restore-check.service"
+    "openclaw-boundary-backup.service"
+  )
+  print_header "operational_logs_recent"
+  echo "lines_per_unit=${DEFAULT_UNIT_LOG_LINES}"
+  for unit in "${allowed_units[@]}"; do
+    echo "-- unit=${unit} --"
+    output="$("${JOURNALCTL_BIN}" -u "${unit}" -n "${DEFAULT_UNIT_LOG_LINES}" --no-pager --output=short-iso --quiet 2>/dev/null || true)"
+    if [[ -z "${output}" || "${output}" == "-- No entries --" ]]; then
+      echo "no_entries=yes"
+    else
+      printf '%s\n' "${output}"
+    fi
+  done
+}
+
 main() {
   require_root
   require_deps
@@ -295,6 +323,7 @@ main() {
     broker_state_console) broker_state_console ;;
     broker_audit_recent) broker_audit_recent ;;
     telegram_runtime_status) telegram_runtime_status ;;
+    operational_logs_recent) operational_logs_recent ;;
     *) usage ;;
   esac
 }

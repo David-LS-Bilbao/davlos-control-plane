@@ -13,7 +13,7 @@ No sustituye la evidencia operativa validada en runtime.
 - existe un único runtime de agente documentado y validado: `OpenClaw`
 - el servicio desplegado es `openclaw-gateway`
 - el runtime host-side vive bajo `/opt/automation/agents/openclaw`
-- la ruta host-side de secretos reservada es `/etc/davlos/secrets/openclaw`
+- la ruta host-side de secretos usada hoy es `/etc/davlos/secrets/openclaw`
 - la red usada es `agents_net`
 - el bind host publicado para el gateway es `127.0.0.1:18789`
 - OpenClaw consume inferencia por `http://172.22.0.1:11440/v1`
@@ -21,7 +21,22 @@ No sustituye la evidencia operativa validada en runtime.
 - `inference-gateway` escucha solo en `127.0.0.1:11440` y `172.22.0.1:11440`
 - `inference-gateway` ya no responde por la IP pública del host
 - la reachability `agents_net -> 172.22.0.1:11440` quedó validada en runtime
+- existe broker restringido operativo en host con policy viva y auditoría
+- existe Telegram persistente operativo como canal corto, con degradación/intermitencia de polling ya observada
+- existe helper readonly host-side y debe tratarse como vía preferente de observabilidad controlada
+- el boundary OpenClaw ya puede tratarse como `baseline prudente validado` por verificación readonly host-side
 - la consola `DAVLOS VPN Console` expone observabilidad readonly para `OpenClaw` e `inference-gateway`
+
+## precedencia documental
+
+Para OpenClaw deben distinguirse siempre tres planos:
+
+- estado operativo real observado;
+- plantillas y scripts versionados;
+- diseño y documentación del repo.
+
+Este documento describe el contrato operativo vigente del repo, pero no sustituye evidencia de host.
+Cuando exista drift material entre repo y runtime, debe prevalecer la evidencia observada y documentarse el gap antes de cualquier redeploy.
 
 ## trust boundary operativa
 
@@ -59,6 +74,10 @@ Motivo de la separación:
   - `no-new-privileges`
   - `cap_drop: ALL`
   - sin publicación en IP pública
+- drift contractual conocido:
+  - el control northbound observado es loopback-only por publish host
+  - `templates/openclaw/openclaw.json.example` mantiene `bind: "lan"`
+  - este punto debe tratarse como drift contractual/documental pendiente y no corregirse a ciegas en runtime
 
 ### inference-gateway
 
@@ -79,7 +98,18 @@ Motivo de la separación:
 - el repositorio no contiene secretos reales
 - `OPENCLAW_GATEWAY_TOKEN` sigue siendo el único secreto operativo mínimo del MVP local
 - hoy puede vivir en el `.env` root-owned del runtime de OpenClaw
-- `/etc/davlos/secrets/openclaw` queda reservado para crecimiento posterior sin reestructurar mounts ni contrato host-side
+- `/etc/davlos/secrets/openclaw` ya forma parte del runtime host-side efectivo
+
+### ownership observado del runtime
+
+- `root` conserva `compose`, `broker`, `dropzone` y secretos
+- `devops` posee `config`, `state` y `logs`
+
+Juicio operativo:
+
+- este reparto debe tratarse como deliberado;
+- no debe simplificarse a `chown -R` completo a `devops`;
+- si hiciera falta más visibilidad operativa para `devops`, la vía preferente sigue siendo helper readonly o un mecanismo acotado equivalente.
 
 ## límites explícitos de acceso
 
@@ -113,15 +143,18 @@ Motivo de la separación:
 - trust boundary separada respecto a `n8n`, NPM, WireGuard y PostgreSQL
 - mínimo privilegio en el contenedor
 - sin credenciales cloud necesarias en este MVP local
+- broker restringido y Telegram ya forman parte del runtime operativo observado
 - cambios operativos posteriores deben ser pequeños, reversibles y con evidencia
-- el siguiente tramo de evolución es broker restringido, no nuevas capacidades prematuras
+- cualquier intervención posterior debe pasar antes por revisión explícita de drift repo/runtime
+- la referencia documental de cierre de baseline prudente vigente es `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 
 ## riesgos residuales conocidos
 
-- la allowlist real de egress para `agents_net` sigue pendiente
+- el hardening final de egress sigue pendiente de cierre documental final
 - la imagen sigue fijada por tag revisado y no por digest operativo final
 - el `healthcheck` actual de OpenClaw es suficiente para MVP, pero no equivale a política final de liveness/readiness
 - existe drift operativo en UFW entre configuración declarada y reglas runtime cargadas; hoy no bloquea la operación, pero debe normalizarse antes de endurecimientos posteriores
+- existe drift material entre documentación, plantillas y runtime observado; no debe redeployarse a ciegas mientras siga abierto
 
 ## superficie disponible hoy
 
@@ -133,14 +166,13 @@ Motivo de la separación:
 
 ## lo que no debe darse por implementado
 
-- broker restringido
-- policy store
 - menú final de control de capacidades con escritura
-- integración Telegram
 - chat operativo final
 - acciones A/B/C/D
-- allowlist final de egress aplicada
+- allowlist final de egress declarada como totalmente cerrada por toda la documentación
 - política final de secretos para proveedores externos
+- resolución definitiva del drift entre publish loopback y `bind: "lan"`
+- coincidencia exacta entre plantillas sensibles y runtime vivo
 
 ## documentos de referencia
 
@@ -151,5 +183,7 @@ Motivo de la separación:
 - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
 - `runbooks/OPENCLAW_DEPLOY_MVP.md`
 - `runbooks/OPENCLAW_ROLLBACK_MVP.md`
+- `docs/OPENCLAW_RUNTIME_DRIFT_2026-04-08.md`
+- `docs/reports/OPENCLAW_BASELINE_PRUDENTE_VALIDADO_2026-04-08.md`
 - `docs/reports/OPENCLAW_BOUNDARY_RUNTIME_FIX_2026-04-01.md`
 - `docs/reports/OPENCLAW_AGENTS_NET_REACHABILITY_FIX_2026-04-01.md`

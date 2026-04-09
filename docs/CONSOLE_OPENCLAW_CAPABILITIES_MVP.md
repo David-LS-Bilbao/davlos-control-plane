@@ -27,11 +27,13 @@ Las mutaciones no se aplican directamente desde Bash:
 - la CLI valida ese `operator_id` contra la allowlist viva de operadores
 - si el operador no está autorizado, la mutación se rechaza y queda auditada
 
-La inspección readonly del runtime intenta este orden:
+La consola prioriza la lectura directa del runtime.
 
-1. lectura directa del runtime
-2. helper host-side `sudo -n /usr/local/sbin/davlos-openclaw-readonly`
-3. fallback declarativo a la policy visible del repo
+Si la lectura falla por permisos y el helper readonly está disponible, puede usar:
+
+- `sudo -n /usr/local/sbin/davlos-openclaw-readonly`
+
+Si la vista no puede leer runtime ni vía sesión ni vía helper, degrada a información declarativa del repo cuando esa vista lo permite.
 
 ## entrada al menú
 
@@ -66,7 +68,8 @@ Muestra por acción:
 - `one_shot`
 - `consumed`
 - `reason`
-- `updated_by`
+
+`updated_by` sigue existiendo en runtime y auditoría, pero la salida `console` no lo imprime hoy.
 
 Cuando el runtime no es legible directamente pero el helper readonly está instalado, la consola usa:
 
@@ -91,6 +94,27 @@ La consola muestra una ficha operativa por acción conocida con:
 - `permission`
 - descripción corta
 - badge visual `READONLY`, `RESTRICTED` o `CONTROL`
+
+### diagnóstico broker/runtime
+
+El bloque de diagnóstico puede combinar:
+
+- lectura directa de runtime y servicios visibles desde la sesión
+- `sudo -n /usr/local/sbin/davlos-openclaw-readonly operational_logs_recent`
+
+`operational_logs_recent` mantiene superficie cerrada:
+
+- solo expone las últimas líneas de una allowlist fija de units
+- no acepta nombres de unit arbitrarios
+- no equivale a acceso general a `journald`
+
+La allowlist actual cubre:
+
+- `openclaw-telegram-bot.service`
+- `inference-gateway.service`
+- `obsidian-vault-backup.service`
+- `obsidian-vault-restore-check.service`
+- `openclaw-boundary-backup.service`
 
 ### habilitar acción
 
@@ -168,6 +192,8 @@ La auditoría se conserva en el audit log del broker.
 
 Cuando existe helper readonly, la consola puede leer esa auditoría y el estado efectivo sin abrir permisos generales sobre `/opt/automation`.
 
+La vista `console` no expone todos los campos internos del runtime; `updated_by` sigue siendo trazable en runtime y auditoría aunque no se renderice en esa salida.
+
 ## degradación segura
 
 Si la sesión no tiene:
@@ -182,7 +208,7 @@ la consola:
 - muestra un mensaje corto y claro
 - no rompe otros menús
 - no intenta editar JSON manualmente
-- si existe helper readonly, intenta leer runtime y auditoría por esa vía antes de degradar
+- si la lectura runtime falla por permisos y existe helper readonly, intenta leer runtime y auditoría por esa vía antes de degradar
 
 ## límites conocidos
 

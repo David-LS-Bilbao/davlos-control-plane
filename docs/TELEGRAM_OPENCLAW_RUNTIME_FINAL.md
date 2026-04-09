@@ -114,6 +114,12 @@ Si la sesión `devops` no puede leer directamente `/opt/automation/agents/opencl
 - auditoría reciente del broker
 - estado efectivo de capacidades
 
+La observabilidad ampliada vía helper sigue siendo cerrada:
+
+- usa modos concretos del helper, no rutas arbitrarias
+- para logs recientes opera sobre una allowlist fija de units
+- no equivale a acceso general a `journald`
+
 ## validación final esperada
 
 Comandos ya validados en Telegram:

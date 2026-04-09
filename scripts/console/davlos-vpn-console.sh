@@ -78,9 +78,187 @@ subrule() {
   printf '%s\n' '----------------------------------------------------------------'
 }
 
+panel_text_length() {
+  local text="$1"
+  printf '%s' "${#text}"
+}
+
+panel_truncate_text() {
+  local text="$1"
+  local max_width="$2"
+  if (( max_width <= 0 )); then
+    printf '%s' ""
+    return
+  fi
+  if (( ${#text} <= max_width )); then
+    printf '%s' "${text}"
+    return
+  fi
+  if (( max_width <= 3 )); then
+    printf '%.*s' "${max_width}" "${text}"
+    return
+  fi
+  printf '%.*s...' "$((max_width - 3))" "${text}"
+}
+
+panel_row() {
+  local left_plain="$1"
+  local right_plain="$2"
+  local total_width="$3"
+  local left_style="${4:-}"
+  local right_style="${5:-}"
+  local frame_style="${COLOR_BOLD}${COLOR_GREEN}"
+  local content_width left_len right_len padding max_left
+  local left_rendered right_rendered
+
+  content_width=$((total_width - 4))
+  right_len="$(panel_text_length "${right_plain}")"
+  if (( right_len > content_width - 1 )); then
+    right_plain="$(panel_truncate_text "${right_plain}" "$((content_width - 1))")"
+    right_len="$(panel_text_length "${right_plain}")"
+  fi
+
+  left_len="$(panel_text_length "${left_plain}")"
+  if (( left_len + right_len > content_width )); then
+    max_left=$((content_width - right_len - 1))
+    if (( max_left < 1 )); then
+      max_left=1
+    fi
+    left_plain="$(panel_truncate_text "${left_plain}" "${max_left}")"
+    left_len="$(panel_text_length "${left_plain}")"
+  fi
+
+  padding=$((content_width - left_len - right_len))
+  if (( padding < 1 )); then
+    padding=1
+  fi
+
+  left_rendered="${left_plain}"
+  if [[ -n "${left_style}" ]]; then
+    left_rendered="${left_style}${left_plain}${COLOR_RESET}"
+  fi
+
+  right_rendered="${right_plain}"
+  if [[ -n "${right_style}" ]]; then
+    right_rendered="${right_style}${right_plain}${COLOR_RESET}"
+  fi
+
+  printf '%b║%b %s%*s%s %b║%b\n' "${frame_style}" "${COLOR_RESET}" "${left_rendered}" "${padding}" "" "${right_rendered}" "${frame_style}" "${COLOR_RESET}"
+}
+
+panel_center_line() {
+  local text_plain="$1"
+  local total_width="$2"
+  local text_style="${3:-}"
+  local frame_style="${COLOR_BOLD}${COLOR_GREEN}"
+  local content_width text_len left_pad right_pad
+  local rendered_text
+
+  content_width=$((total_width - 4))
+  text_len="$(panel_text_length "${text_plain}")"
+  if (( text_len > content_width )); then
+    text_plain="$(panel_truncate_text "${text_plain}" "${content_width}")"
+    text_len="$(panel_text_length "${text_plain}")"
+  fi
+
+  left_pad=$(((content_width - text_len) / 2))
+  right_pad=$((content_width - text_len - left_pad))
+  rendered_text="${text_plain}"
+  if [[ -n "${text_style}" ]]; then
+    rendered_text="${text_style}${text_plain}${COLOR_RESET}"
+  fi
+
+  printf '%b║%b %*s%s%*s %b║%b\n' "${frame_style}" "${COLOR_RESET}" "${left_pad}" "" "${rendered_text}" "${right_pad}" "" "${frame_style}" "${COLOR_RESET}"
+}
+
+panel_rule() {
+  local left_border="$1"
+  local fill_char="$2"
+  local right_border="$3"
+  local total_width="$4"
+  local frame_style="${COLOR_BOLD}${COLOR_GREEN}"
+  local fill
+
+  printf -v fill '%*s' "$((total_width - 2))" ''
+  fill="${fill// /${fill_char}}"
+  printf '%b%s%s%s%b\n' "${frame_style}" "${left_border}" "${fill}" "${right_border}" "${COLOR_RESET}"
+}
+
+panel_metric_cpu() {
+  local metric
+  metric="$(LC_ALL=C top -bn1 2>/dev/null | awk -F'[ ,]+' '/^%Cpu\\(s\\):/ {for (i = 1; i <= NF; i++) if ($i == "id") {printf "CPU: %.0f%%", 100 - $(i - 1); found = 1; exit}} END {if (!found) printf "CPU: N/A"}')"
+  if [[ -z "${metric}" || "${metric}" == "CPU: N/A" ]]; then
+    metric="$(awk '/^cpu / {idle = $5 + $6; total = 0; for (i = 2; i <= NF; i++) total += $i; if (total > 0) {printf "CPU: %.0f%%", ((total - idle) / total) * 100; found = 1; exit}} END {if (!found) printf "CPU: N/A"}' /proc/stat 2>/dev/null)"
+  fi
+  if [[ -z "${metric}" ]]; then
+    metric="CPU: N/A"
+  fi
+  printf '%s' "${metric}"
+}
+
+panel_metric_ram() {
+  local metric
+  metric="$(free -m 2>/dev/null | awk '/^Mem:/ && $2 > 0 {printf "RAM: %.0f%%", ($3 / $2) * 100; found = 1} END {if (!found) printf "RAM: N/A"}')"
+  if [[ -z "${metric}" ]]; then
+    metric="RAM: N/A"
+  fi
+  printf '%s' "${metric}"
+}
+
+panel_metric_vpn_nodes() {
+  printf '%s' "Nodos VPN: 3 Activos"
+}
+
+panel_terminal_width() {
+  local width="${COLUMNS:-}"
+  if [[ -z "${width}" && -n "${TERM:-}" ]] && command -v tput >/dev/null 2>&1; then
+    width="$(tput cols 2>/dev/null || true)"
+  fi
+  if ! [[ "${width}" =~ ^[0-9]+$ ]]; then
+    width=80
+  fi
+  printf '%s' "${width}"
+}
+
 brand_block() {
-  printf '%b\n' "${COLOR_BOLD}${COLOR_BLUE}DAVLOS CONTROL-PLANE${COLOR_RESET}"
-  printf '%b\n' "${COLOR_BOLD}VPN Console MVP${COLOR_RESET}"
+  local panel_total_width=70
+  local terminal_width
+  local madrid_time cpu_metric ram_metric vpn_metric combined_metric
+  local banner_lines=(
+    "██████╗  █████╗ ██╗   ██╗██╗      ██████╗ ███████╗"
+    "██╔══██╗██╔══██╗██║   ██║██║     ██╔═══██╗██╔════╝"
+    "██║  ██║███████║██║   ██║██║     ██║   ██║███████╗"
+    "██║  ██║██╔══██║╚██╗ ██╔╝██║     ██║   ██║╚════██║"
+    "██████╔╝██║  ██║ ╚████╔╝ ███████╗╚██████╔╝███████║"
+    "╚═════╝ ╚═╝  ╚═╝  ╚═══╝  ╚══════╝ ╚═════╝ ╚══════╝"
+  )
+  local banner_line
+
+  terminal_width="$(panel_terminal_width)"
+  madrid_time="$(TZ="Europe/Madrid" date +%FT%T%z)"
+  cpu_metric="$(panel_metric_cpu)"
+  ram_metric="$(panel_metric_ram)"
+  vpn_metric="$(panel_metric_vpn_nodes)"
+  combined_metric="${cpu_metric} | ${ram_metric}"
+
+  if (( terminal_width < 72 )); then
+    printf '%b%s%b %b%s%b\n' "${COLOR_BOLD}${COLOR_WHITE}" "DAVLOS VPN Console MVP" "${COLOR_RESET}" "${COLOR_BOLD}${COLOR_GREEN}" "[ ONLINE ]" "${COLOR_RESET}"
+    printf '  Repo: %s\n' "${REPO_ROOT}"
+    printf '  Hora: %s\n' "${madrid_time}"
+    printf '  %s | %s\n' "${cpu_metric}" "${ram_metric}"
+    printf '  %s\n' "${vpn_metric}"
+    return
+  fi
+
+  panel_rule "╔" "═" "╗" "${panel_total_width}"
+  for banner_line in "${banner_lines[@]}"; do
+    panel_center_line "${banner_line}" "${panel_total_width}" "${COLOR_BOLD}${COLOR_WHITE}"
+  done
+  panel_rule "╠" "═" "╣" "${panel_total_width}"
+  panel_row "VPN Console MVP" "[ ONLINE ]" "${panel_total_width}" "" "${COLOR_BOLD}${COLOR_GREEN}"
+  panel_row "Repo: ${REPO_ROOT}" "${combined_metric}" "${panel_total_width}"
+  panel_row "Time: ${madrid_time}" "${vpn_metric}" "${panel_total_width}"
+  panel_rule "╚" "═" "╝" "${panel_total_width}"
 }
 
 print_section_title() {
@@ -115,12 +293,18 @@ notice_line() {
 }
 
 print_header() {
+  if [[ -t 1 && -n "${TERM:-}" && "${TERM}" != "dumb" ]]; then
+      clear
+  fi
   printf '\n'
-  rule
   brand_block
-  subrule
-  kv_line "repo" "${REPO_ROOT}"
-  kv_line "timestamp" "$(date -u +%FT%TZ)"
+
+  local current_user
+  current_user="$(whoami)"
+  if [[ "${current_user}" != "devops" && "${current_user}" != "root" ]]; then
+      printf '\n'
+      notice_line warning "Ejecutando como '${current_user}'. Los datos reales requieren lanzar esto como 'devops'."
+  fi
   printf '\n'
 }
 
@@ -945,14 +1129,9 @@ select_mutating_action_id() {
     prompt_optional 'action_id'
     return 0
   fi
-  print_subsection "seleccion de accion mutante"
-  menu_line "1" "Disparo controlado" "$(badge mutating "action.webhook.trigger.v1")"
-  menu_line "2" "Escritura drop-zone" "$(badge mutating "action.dropzone.write.v1")"
-  menu_line "3" "Reinicio OpenClaw" "$(badge warning "action.openclaw.restart.v1")"
-  menu_line "8" "Introducir action_id manual"
-  menu_line "9" "Cancelar"
-  printf 'Selecciona una accion: '
-  read -r action_choice
+  if ! inline_menu_choice_with_fallback "seleccion de accion mutante" MUTATING_ACTION_OPTIONS show_mutating_action_menu "Selecciona una accion: " action_choice; then
+    return 1
+  fi
   case "${action_choice}" in
     1) printf '%s\n' "action.webhook.trigger.v1" ;;
     2) printf '%s\n' "action.dropzone.write.v1" ;;
@@ -970,6 +1149,15 @@ select_mutating_action_id() {
       return 1
       ;;
   esac
+}
+
+show_mutating_action_menu() {
+  print_subsection "seleccion de accion mutante"
+  menu_line "1" "Disparo controlado" "$(badge mutating "action.webhook.trigger.v1")"
+  menu_line "2" "Escritura drop-zone" "$(badge mutating "action.dropzone.write.v1")"
+  menu_line "3" "Reinicio OpenClaw" "$(badge warning "action.openclaw.restart.v1")"
+  menu_line "8" "Introducir action_id manual"
+  menu_line "9" "Cancelar"
 }
 
 security_preset_title() {
@@ -1128,7 +1316,8 @@ confirm_security_apply() {
 apply_security_preset_flow() {
   local preset="$1"
   local operator reason ttl_minutes default_ttl operation action_id failures=0
-  local change_reason
+  local change_reason rollback_reason rollback_action rollback_failures=0
+  local successful_rollbacks=()
 
   if ! openclaw_broker_cli_available; then
     notice_line error "CLI del broker no disponible desde esta sesion."
@@ -1159,9 +1348,20 @@ apply_security_preset_flow() {
     change_reason="${reason}:${preset}"
     case "${operation}" in
       enable_ttl)
-        if ! apply_openclaw_capability_change \
+        if apply_openclaw_capability_change \
           "$(security_preset_title "${preset}")" \
           enable --action-id "${action_id}" --ttl-minutes "${ttl_minutes}" --operator-id "${operator}" --reason "${change_reason}"; then
+          successful_rollbacks+=("${action_id}")
+        else
+          failures=$((failures + 1))
+        fi
+        ;;
+      enable)
+        if apply_openclaw_capability_change \
+          "$(security_preset_title "${preset}")" \
+          enable --action-id "${action_id}" --operator-id "${operator}" --reason "${change_reason}"; then
+          successful_rollbacks+=("${action_id}")
+        else
           failures=$((failures + 1))
         fi
         ;;
@@ -1172,6 +1372,10 @@ apply_security_preset_flow() {
           failures=$((failures + 1))
         fi
         ;;
+      *)
+        notice_line error "Operacion de preset no soportada: ${operation} (${action_id})"
+        failures=$((failures + 1))
+        ;;
     esac
   done < <(security_preset_plan "${preset}")
 
@@ -1180,7 +1384,29 @@ apply_security_preset_flow() {
     notice_line success "Preset aplicado correctamente: $(security_preset_title "${preset}")"
     return 0
   fi
-  notice_line warning "Preset aplicado con incidencias: ${failures} cambios no se pudieron completar."
+
+  notice_line error "Preset fallido: ${failures} cambios no se pudieron completar."
+  if [[ "${#successful_rollbacks[@]}" -gt 0 ]]; then
+    notice_line warning "Se detecto una apertura parcial. Ejecutando rollback automatico por seguridad."
+    rollback_reason="${reason}:${preset}:auto_rollback"
+    for rollback_action in "${successful_rollbacks[@]}"; do
+      printf '\n'
+      print_subsection "rollback :: $(known_action_label "${rollback_action}")"
+      if ! apply_openclaw_capability_change \
+        "$(security_preset_title "${preset}") / rollback" \
+        disable --action-id "${rollback_action}" --operator-id "${operator}" --reason "${rollback_reason}"; then
+        rollback_failures=$((rollback_failures + 1))
+      fi
+    done
+    printf '\n'
+    if [[ "${rollback_failures}" -eq 0 ]]; then
+      notice_line warning "Rollback automatico completado. Se revirtieron las aperturas aplicadas por el preset."
+    else
+      notice_line error "Rollback automatico incompleto: ${rollback_failures} cambios no se pudieron revertir."
+    fi
+  else
+    notice_line warning "No hubo aperturas exitosas que revertir automaticamente."
+  fi
   return 1
 }
 
@@ -1310,21 +1536,238 @@ show_help() {
 EOF
 }
 
+interactive_menu_render() {
+  local title="$1"
+  local options_name="$2"
+  local selected_index="$3"
+  local -n options_ref="${options_name}"
+  local option_id option_label
+  local index
+  local active_cursor="${COLOR_BOLD}${COLOR_CYAN}❯${COLOR_RESET}"
+  local active_label_style="${COLOR_BOLD}${COLOR_WHITE}"
+
+  printf '\r\033[2K%b%s%b\n' "${COLOR_BOLD}${COLOR_WHITE}" "${title}" "${COLOR_RESET}" > /dev/tty
+  printf '\r\033[2K\n' > /dev/tty
+  for index in "${!options_ref[@]}"; do
+    IFS='|' read -r option_id option_label <<< "${options_ref[${index}]}"
+    if [[ "${index}" -eq "${selected_index}" ]]; then
+      printf '\r\033[2K %b %b%s%b\n' "${active_cursor}" "${active_label_style}" "${option_label}" "${COLOR_RESET}" > /dev/tty
+    else
+      printf '\r\033[2K   %s\n' "${option_label}" > /dev/tty
+    fi
+  done
+  printf '\r\033[2K\n' > /dev/tty
+  printf '\r\033[2K%b%s%b\n' "${COLOR_DIM}" "Usa ↑/↓ y Enter para seleccionar." "${COLOR_RESET}" > /dev/tty
+}
+
+interactive_menu() {
+  local title="$1"
+  local options_name="$2"
+  local result_var="${3:-INTERACTIVE_MENU_RESULT}"
+  local -n options_ref="${options_name}"
+  local selected_index=0
+  local rendered_lines
+  local key escape_1 escape_2
+  local selected_id selected_label
+
+  if [[ ! -t 0 || ! -t 1 || ! -r /dev/tty ]]; then
+    return 1
+  fi
+  if [[ "${#options_ref[@]}" -eq 0 ]]; then
+    return 1
+  fi
+
+  rendered_lines=$(( ${#options_ref[@]} + 4 ))
+  printf '\033[?25l' > /dev/tty
+  interactive_menu_render "${title}" "${options_name}" "${selected_index}"
+
+  while true; do
+    if ! IFS= read -rsn1 key < /dev/tty; then
+      printf '\033[?25h' > /dev/tty
+      return 1
+    fi
+
+    case "${key}" in
+      "")
+        IFS='|' read -r selected_id selected_label <<< "${options_ref[${selected_index}]}"
+        printf '\033[?25h' > /dev/tty
+        printf -v "${result_var}" '%s' "${selected_id}"
+        return 0
+        ;;
+      $'\x1b')
+        escape_1=""
+        escape_2=""
+        IFS= read -rsn1 -t 0.05 escape_1 < /dev/tty || true
+        if [[ "${escape_1}" == "[" ]]; then
+          IFS= read -rsn1 -t 0.05 escape_2 < /dev/tty || true
+          case "${escape_2}" in
+            A)
+              selected_index=$(( (selected_index - 1 + ${#options_ref[@]}) % ${#options_ref[@]} ))
+              ;;
+            B)
+              selected_index=$(( (selected_index + 1) % ${#options_ref[@]} ))
+              ;;
+          esac
+        fi
+        ;;
+      k)
+        selected_index=$(( (selected_index - 1 + ${#options_ref[@]}) % ${#options_ref[@]} ))
+        ;;
+      j)
+        selected_index=$(( (selected_index + 1) % ${#options_ref[@]} ))
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    printf '\033[%dA' "${rendered_lines}" > /dev/tty
+    interactive_menu_render "${title}" "${options_name}" "${selected_index}"
+  done
+}
+
+menu_choice_with_fallback() {
+  local title="$1"
+  local options_name="$2"
+  local fallback_fn="$3"
+  local prompt="$4"
+  local result_var="${5:-MENU_CHOICE}"
+  local selection
+
+  if [[ -t 0 && -t 1 ]]; then
+    print_header
+    if interactive_menu "${title}" "${options_name}" "${result_var}"; then
+      return 0
+    fi
+  fi
+
+  "${fallback_fn}"
+  printf '%s' "${prompt}"
+  read -r selection
+  printf -v "${result_var}" '%s' "${selection}"
+}
+
+inline_menu_choice_with_fallback() {
+  local title="$1"
+  local options_name="$2"
+  local fallback_fn="$3"
+  local prompt="$4"
+  local result_var="${5:-MENU_CHOICE}"
+  local selection
+
+  if [[ -t 0 && -t 1 ]]; then
+    if interactive_menu "${title}" "${options_name}" "${result_var}"; then
+      return 0
+    fi
+  fi
+
+  "${fallback_fn}"
+  printf '%s' "${prompt}"
+  read -r selection
+  printf -v "${result_var}" '%s' "${selection}"
+}
+
 show_menu() {
   print_header
-  print_section_title "Menu principal"
+  print_section_title "  [ MENÚ PRINCIPAL ]"
   echo
-  menu_line "1" "Resumen operativo"
-  menu_line "2" "OpenClaw y Telegram"
-  menu_line "3" "Broker y capacidades"
-  menu_line "4" "Seguridad y control"
-  menu_line "5" "Evidencias e informes"
-  menu_line "6" "Diagnostico"
-  menu_line "7" "Ayuda / limites del MVP"
-  menu_line "9" "Salir"
+  menu_line "1" "📊 Resumen operativo"
+  menu_line "2" "🌐 OpenClaw y Telegram"
+  menu_line "3" "⚙️ Broker y capacidades"
+  menu_line "4" "🔒 Seguridad y control"
+  menu_line "5" "📑 Evidencias e informes"
+  menu_line "6" "🛠️ Diagnostico"
+  menu_line "7" "❓ Ayuda / limites del MVP"
   echo
+  menu_line "9" "🚪 Salir"
+  echo
+  subrule
   printf '%s\n' "$(badge readonly "READONLY") observabilidad, evidencias y diagnostico"
   printf '%s\n' "$(badge mutating "MUTATING") broker/capacidades y presets de seguridad"
+  subrule
+}
+
+declare -a MAIN_MENU_OPTIONS
+declare -a OPENCLAW_MENU_OPTIONS
+declare -a BROKER_MENU_OPTIONS
+declare -a SECURITY_MENU_OPTIONS
+declare -a DIAGNOSTICS_MENU_OPTIONS
+declare -a OPENCLAW_CAPABILITIES_MENU_OPTIONS
+declare -a MUTATING_ACTION_OPTIONS
+
+init_menu_options() {
+  MAIN_MENU_OPTIONS=(
+    "1|📊 Resumen operativo"
+    "2|🌐 OpenClaw y Telegram"
+    "3|⚙️ Broker y capacidades"
+    "4|🔒 Seguridad y control"
+    "5|📑 Evidencias e informes"
+    "6|🛠️ Diagnostico"
+    "7|❓ Ayuda / limites del MVP"
+    "9|🚪 Salir"
+  )
+
+  OPENCLAW_MENU_OPTIONS=(
+    "1|Resumen runtime OpenClaw"
+    "2|Telegram runtime"
+    "3|Logs utiles"
+    "4|Health"
+    "5|Catalogo de acciones"
+    "9|Volver"
+  )
+
+  BROKER_MENU_OPTIONS=(
+    "1|Estado efectivo"
+    "2|Auditoria reciente"
+    "3|Catalogo de acciones"
+    "4|Control manual por accion $(badge mutating "GUIADO")"
+    "5|Diagnostico broker/runtime"
+    "9|Volver"
+  )
+
+  SECURITY_MENU_OPTIONS=(
+    "1|Ver catalogo de presets $(badge readonly "READONLY")"
+    "2|Aplicar observacion estricta $(badge readonly "LOCKDOWN")"
+    "3|Aplicar disparo controlado $(badge mutating "TTL 10m")"
+    "4|Aplicar escritura temporal $(badge mutating "TTL 15m")"
+    "5|Aplicar operador temporal $(badge mutating "TTL 15m")"
+    "6|Aplicar admin restringido $(badge warning "TTL 10m")"
+    "7|Resetear one-shot manual $(badge mutating "MANUAL")"
+    "8|Diagnostico broker/runtime $(badge readonly "READONLY")"
+    "9|Volver"
+  )
+
+  DIAGNOSTICS_MENU_OPTIONS=(
+    "1|Resumen operativo"
+    "2|Estado general del host"
+    "3|Estado de Docker"
+    "4|Red / listeners / puertos clave"
+    "5|Zona de agentes"
+    "6|Diagnostico OpenClaw / broker"
+    "7|Estado de n8n"
+    "8|Evidencias e informes"
+    "9|Volver"
+  )
+
+  OPENCLAW_CAPABILITIES_MENU_OPTIONS=(
+    "1|Ver estado efectivo $(badge readonly "READONLY")"
+    "2|Habilitar accion $(badge mutating "MUTATING")"
+    "3|Deshabilitar accion $(badge mutating "MUTATING")"
+    "4|Habilitar accion con TTL $(badge mutating "MUTATING")"
+    "5|Resetear one-shot consumido $(badge mutating "MUTATING")"
+    "6|Ver auditoria reciente $(badge readonly "READONLY")"
+    "7|Catalogo de acciones $(badge readonly "READONLY")"
+    "8|Diagnostico broker/runtime $(badge readonly "READONLY")"
+    "9|Volver"
+  )
+
+  MUTATING_ACTION_OPTIONS=(
+    "1|Disparo controlado $(badge mutating "action.webhook.trigger.v1")"
+    "2|Escritura drop-zone $(badge mutating "action.dropzone.write.v1")"
+    "3|Reinicio OpenClaw $(badge warning "action.openclaw.restart.v1")"
+    "8|Introducir action_id manual"
+    "9|Cancelar"
+  )
 }
 
 show_openclaw_menu() {
@@ -1418,9 +1861,7 @@ run_broker_section() {
     3|catalog) show_openclaw_action_catalog ;;
     4|manual)
       while true; do
-        show_openclaw_capabilities_menu
-        printf 'Selecciona una opcion: '
-        read -r openclaw_cap_choice
+        menu_choice_with_fallback "Broker / control manual" OPENCLAW_CAPABILITIES_MENU_OPTIONS show_openclaw_capabilities_menu "Selecciona una opcion: " openclaw_cap_choice
         case "${openclaw_cap_choice}" in
           1) show_openclaw_capabilities ;;
           2) openclaw_capability_enable_flow ;;
@@ -1512,6 +1953,7 @@ run_section() {
 }
 
 init_console_style
+init_menu_options
 
 if [[ -n "${SECTION}" ]]; then
   run_section "${SECTION}"
@@ -1519,15 +1961,11 @@ if [[ -n "${SECTION}" ]]; then
 fi
 
 while true; do
-  show_menu
-  printf 'Selecciona una opcion: '
-  read -r choice
+  menu_choice_with_fallback "  [ MENÚ PRINCIPAL ]" MAIN_MENU_OPTIONS show_menu "Selecciona una opcion: " choice
   case "${choice}" in
     2)
       while true; do
-        show_openclaw_menu
-        printf 'Selecciona una opcion: '
-        read -r openclaw_choice
+        menu_choice_with_fallback "OpenClaw y Telegram" OPENCLAW_MENU_OPTIONS show_openclaw_menu "Selecciona una opcion: " openclaw_choice
         if ! run_openclaw_section "${openclaw_choice}"; then
           break
         fi
@@ -1536,9 +1974,7 @@ while true; do
       ;;
     3)
       while true; do
-        show_broker_menu
-        printf 'Selecciona una opcion: '
-        read -r broker_choice
+        menu_choice_with_fallback "Broker y capacidades" BROKER_MENU_OPTIONS show_broker_menu "Selecciona una opcion: " broker_choice
         if ! run_broker_section "${broker_choice}"; then
           break
         fi
@@ -1547,9 +1983,7 @@ while true; do
       ;;
     4)
       while true; do
-        show_security_menu
-        printf 'Selecciona una opcion: '
-        read -r security_choice
+        menu_choice_with_fallback "Seguridad y control" SECURITY_MENU_OPTIONS show_security_menu "Selecciona una opcion: " security_choice
         if ! run_security_section "${security_choice}"; then
           break
         fi
@@ -1558,9 +1992,7 @@ while true; do
       ;;
     6)
       while true; do
-        show_diagnostics_menu
-        printf 'Selecciona una opcion: '
-        read -r diagnostics_choice
+        menu_choice_with_fallback "Diagnostico" DIAGNOSTICS_MENU_OPTIONS show_diagnostics_menu "Selecciona una opcion: " diagnostics_choice
         if ! run_diagnostics_section "${diagnostics_choice}"; then
           break
         fi

@@ -16,6 +16,7 @@ from models import (
     TelegramPrincipalRecord,
     WebhookTargetConfig,
 )
+from state_store import LockedJsonStateStore, StateStoreError
 
 
 class PolicyError(ValueError):
@@ -64,7 +65,8 @@ class PolicyStore:
         self.operator_auth = self._load_operator_auth(self.raw.get("operator_auth", {}))
         self.telegram = self._load_telegram(self.raw.get("telegram", {}))
         self.state_store_path = Path(self.broker.state_store_path)
-        self.runtime_state = self._load_runtime_state(self.state_store_path)
+        self.runtime_store = LockedJsonStateStore(self.state_store_path)
+        self.runtime_state = self._load_runtime_state()
 
     @staticmethod
     def _load_json(path: Path) -> dict:
@@ -253,15 +255,15 @@ class PolicyStore:
             ),
         )
 
-    @staticmethod
-    def _load_runtime_state(path: Path) -> dict[str, dict]:
-        if not path.exists():
-            return {}
-        payload = PolicyStore._load_json(path)
-        actions = payload.get("actions", {})
-        if not isinstance(actions, dict):
-            raise PolicyError("runtime state actions must be an object")
-        return actions
+    def _load_runtime_state(self) -> dict[str, dict]:
+        try:
+            return self.runtime_store.load_actions()
+        except StateStoreError as exc:
+            raise PolicyError(str(exc)) from exc
+
+    def refresh_runtime_state(self) -> dict[str, dict]:
+        self.runtime_state = self._load_runtime_state()
+        return self.runtime_state
 
     @staticmethod
     def validate_policy(path: str | Path) -> tuple[bool, list[str]]:
@@ -277,11 +279,21 @@ class PolicyStore:
         *,
         now: datetime | None = None,
     ) -> EffectiveActionState | None:
+        runtime_state = self.refresh_runtime_state()
+        return self._get_effective_action_state_from_runtime(action_id, runtime_state=runtime_state, now=now)
+
+    def _get_effective_action_state_from_runtime(
+        self,
+        action_id: str,
+        *,
+        runtime_state: dict[str, dict],
+        now: datetime | None = None,
+    ) -> EffectiveActionState | None:
         declared = self.actions.get(action_id)
         if declared is None:
             return None
         now = now or datetime.now(timezone.utc)
-        override = self.runtime_state.get(action_id, {})
+        override = runtime_state.get(action_id, {})
         enabled = bool(override.get("enabled", declared.enabled))
         mode = str(override.get("mode", declared.mode))
         expires_dt = parse_optional_datetime(
@@ -320,9 +332,10 @@ class PolicyStore:
         )
 
     def list_effective_action_states(self, *, now: datetime | None = None) -> list[EffectiveActionState]:
+        runtime_state = self.refresh_runtime_state()
         states: list[EffectiveActionState] = []
         for action_id in sorted(self.actions):
-            state = self.get_effective_action_state(action_id, now=now)
+            state = self._get_effective_action_state_from_runtime(action_id, runtime_state=runtime_state, now=now)
             if state is not None:
                 states.append(state)
         return states
@@ -375,12 +388,15 @@ class PolicyStore:
         reason: str = "consumed_after_valid_execution",
     ) -> None:
         used_at = used_at or datetime.now(timezone.utc)
-        action_state = self.runtime_state.setdefault(action_id, {})
-        action_state["one_shot_consumed"] = True
-        action_state["consumed_at"] = used_at.isoformat().replace("+00:00", "Z")
-        action_state["updated_by"] = updated_by
-        action_state["reason"] = reason
-        self._persist_runtime_state()
+        self._mutate_runtime_state(
+            action_id,
+            lambda action_state: self._apply_one_shot_consumed(
+                action_state,
+                used_at=used_at,
+                updated_by=updated_by,
+                reason=reason,
+            ),
+        )
 
     def mark_one_shot_used(
         self,
@@ -403,12 +419,14 @@ class PolicyStore:
             raise PolicyError(f"unknown action_id: {action_id}")
         if not declared.one_shot:
             raise PolicyError(f"action is not one_shot: {action_id}")
-        action_state = self.runtime_state.setdefault(action_id, {})
-        action_state["one_shot_consumed"] = False
-        action_state.pop("consumed_at", None)
-        action_state["updated_by"] = updated_by
-        action_state["reason"] = reason
-        self._persist_runtime_state()
+        self._mutate_runtime_state(
+            action_id,
+            lambda action_state: self._apply_one_shot_reset(
+                action_state,
+                updated_by=updated_by,
+                reason=reason,
+            ),
+        )
 
     def set_action_enabled(
         self,
@@ -421,11 +439,15 @@ class PolicyStore:
         declared = self.actions.get(action_id)
         if declared is None:
             raise PolicyError(f"unknown action_id: {action_id}")
-        action_state = self.runtime_state.setdefault(action_id, {})
-        action_state["enabled"] = enabled
-        action_state["updated_by"] = updated_by
-        action_state["reason"] = reason or ("enabled_via_cli" if enabled else "disabled_via_cli")
-        self._persist_runtime_state()
+        self._mutate_runtime_state(
+            action_id,
+            lambda action_state: self._apply_enabled(
+                action_state,
+                enabled=enabled,
+                updated_by=updated_by,
+                reason=reason or ("enabled_via_cli" if enabled else "disabled_via_cli"),
+            ),
+        )
 
     def set_action_enabled_with_expiration(
         self,
@@ -439,16 +461,16 @@ class PolicyStore:
         declared = self.actions.get(action_id)
         if declared is None:
             raise PolicyError(f"unknown action_id: {action_id}")
-        action_state = self.runtime_state.setdefault(action_id, {})
-        action_state["enabled"] = enabled
-        action_state["expires_at"] = (
-            expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-            if expires_at is not None
-            else None
+        self._mutate_runtime_state(
+            action_id,
+            lambda action_state: self._apply_enabled_with_expiration(
+                action_state,
+                enabled=enabled,
+                expires_at=expires_at,
+                updated_by=updated_by,
+                reason=reason or ("enabled_with_expiration_via_cli" if enabled else "disabled_via_cli"),
+            ),
         )
-        action_state["updated_by"] = updated_by
-        action_state["reason"] = reason or ("enabled_with_expiration_via_cli" if enabled else "disabled_via_cli")
-        self._persist_runtime_state()
 
     def set_action_expiration(
         self,
@@ -461,16 +483,91 @@ class PolicyStore:
         declared = self.actions.get(action_id)
         if declared is None:
             raise PolicyError(f"unknown action_id: {action_id}")
-        action_state = self.runtime_state.setdefault(action_id, {})
-        if expires_at is None:
-            action_state["expires_at"] = None
-        else:
-            action_state["expires_at"] = expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        action_state["updated_by"] = updated_by
-        action_state["reason"] = reason or "updated_expiration_via_cli"
-        self._persist_runtime_state()
+        self._mutate_runtime_state(
+            action_id,
+            lambda action_state: self._apply_expiration(
+                action_state,
+                expires_at=expires_at,
+                updated_by=updated_by,
+                reason=reason or "updated_expiration_via_cli",
+            ),
+        )
 
-    def _persist_runtime_state(self) -> None:
-        self.state_store_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"actions": self.runtime_state}
-        self.state_store_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    def _mutate_runtime_state(self, action_id: str, mutator) -> None:
+        try:
+            self.runtime_state = self.runtime_store.update_actions(
+                lambda actions: mutator(actions.setdefault(action_id, {}))
+            )
+        except StateStoreError as exc:
+            raise PolicyError(str(exc)) from exc
+
+    @staticmethod
+    def _apply_one_shot_consumed(
+        action_state: dict[str, object],
+        *,
+        used_at: datetime,
+        updated_by: str,
+        reason: str,
+    ) -> None:
+        action_state["one_shot_consumed"] = True
+        action_state["consumed_at"] = used_at.isoformat().replace("+00:00", "Z")
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
+
+    @staticmethod
+    def _apply_one_shot_reset(
+        action_state: dict[str, object],
+        *,
+        updated_by: str,
+        reason: str,
+    ) -> None:
+        action_state["one_shot_consumed"] = False
+        action_state.pop("consumed_at", None)
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
+
+    @staticmethod
+    def _apply_enabled(
+        action_state: dict[str, object],
+        *,
+        enabled: bool,
+        updated_by: str,
+        reason: str,
+    ) -> None:
+        action_state["enabled"] = enabled
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
+
+    @staticmethod
+    def _apply_enabled_with_expiration(
+        action_state: dict[str, object],
+        *,
+        enabled: bool,
+        expires_at: datetime | None,
+        updated_by: str,
+        reason: str,
+    ) -> None:
+        action_state["enabled"] = enabled
+        action_state["expires_at"] = (
+            expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            if expires_at is not None
+            else None
+        )
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
+
+    @staticmethod
+    def _apply_expiration(
+        action_state: dict[str, object],
+        *,
+        expires_at: datetime | None,
+        updated_by: str,
+        reason: str,
+    ) -> None:
+        action_state["expires_at"] = (
+            expires_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            if expires_at is not None
+            else None
+        )
+        action_state["updated_by"] = updated_by
+        action_state["reason"] = reason
