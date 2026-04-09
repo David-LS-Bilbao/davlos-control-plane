@@ -1,0 +1,44 @@
+[Unit]
+Description=OpenClaw Vault Inbox Writer (manual oneshot)
+After=local-fs.target
+RequiresMountsFor=/opt/data/obsidian/vault-main /opt/control-plane /var/lib/openclaw-vault-inbox-writer
+ConditionPathIsDirectory=/opt/data/obsidian/vault-main/Agent/Inbox_Agent
+ConditionPathExists=/var/lib/openclaw-vault-inbox-writer/INBOX_INPUT.md
+ConditionPathExists=/opt/control-plane/scripts/helpers/openclaw_vault_inbox_writer.py
+
+[Service]
+Type=oneshot
+# La existencia real de este usuario y su membresia a `obsidian` quedan pendientes de verificacion en host.
+User=openclaw-vault-inbox-writer
+Group=openclaw-vault-inbox-writer
+SupplementaryGroups=obsidian
+WorkingDirectory=/opt/control-plane
+UMask=0007
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+LogsDirectory=openclaw-vault-inbox-writer
+ReadWritePaths=/opt/data/obsidian/vault-main/Agent/Inbox_Agent
+ReadOnlyPaths=/opt/control-plane/scripts/helpers/openclaw_vault_inbox_writer.py /var/lib/openclaw-vault-inbox-writer/INBOX_INPUT.md
+
+ExecStart=/usr/bin/python3 /opt/control-plane/scripts/helpers/openclaw_vault_inbox_writer.py inbox.write --vault-root /opt/data/obsidian/vault-main --audit-root /var/log/openclaw-vault-inbox-writer --input-request-file /var/lib/openclaw-vault-inbox-writer/INBOX_INPUT.md
+
+StandardOutput=journal
+StandardError=journal
