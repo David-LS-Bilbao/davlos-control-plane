@@ -237,8 +237,16 @@ openclaw_broker_cli_available() {
   command -v python3 >/dev/null 2>&1 && [[ -r "${OPENCLAW_RESTRICTED_OPERATOR_CLI}" ]]
 }
 
+openclaw_readonly_helper_command() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "${OPENCLAW_READONLY_HELPER}" "$@"
+    return $?
+  fi
+  sudo -n "${OPENCLAW_READONLY_HELPER}" "$@"
+}
+
 openclaw_readonly_helper_available() {
-  [[ -f "${OPENCLAW_READONLY_HELPER}" ]] && sudo -n "${OPENCLAW_READONLY_HELPER}" runtime_summary >/dev/null 2>&1
+  [[ -f "${OPENCLAW_READONLY_HELPER}" ]] && openclaw_readonly_helper_command runtime_summary >/dev/null 2>&1
 }
 
 run_openclaw_readonly_helper() {
@@ -246,7 +254,7 @@ run_openclaw_readonly_helper() {
     echo "Helper readonly de OpenClaw no instalado en el host." >&2
     return 1
   fi
-  sudo -n "${OPENCLAW_READONLY_HELPER}" "$@"
+  openclaw_readonly_helper_command "$@"
 }
 
 runtime_access_badge() {
