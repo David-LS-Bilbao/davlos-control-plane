@@ -295,6 +295,13 @@ class TelegramCommandProcessor:
                 operator_id=operator_id,
                 argument_text=argument_text,
             )
+        if command == "/inbox_write":
+            return self._handle_inbox_write(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                argument_text=argument_text,
+            )
 
         self._audit_channel_event(
             event="telegram_command_rejected_unknown",
@@ -712,6 +719,38 @@ class TelegramCommandProcessor:
                 operator_id,
                 pending.reason,
             )
+        elif pending.mutation == "inbox_write":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.inbox.write.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            body = pending.params.get("capture_body") or ""
+            audit_p = {
+                "run_id": pending.params.get("run_id"),
+                "capture_title": pending.params.get("capture_title"),
+                "body_bytes": len(body.encode("utf-8")),
+                "source_refs_count": len(pending.params.get("source_refs") or []),
+            }
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="/inbox_write",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.inbox.write.v1",
+                params=audit_p,
+                result=result.to_dict() if result.ok else None,
+                error=result.error,
+                code=result.code,
+            )
+            if result.ok:
+                note_name = result.result.get("note_name", "?")
+                return f"Captura guardada.\nnota: {note_name}"
+            return f"Error guardando captura.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1128,6 +1167,7 @@ class TelegramCommandProcessor:
     def _extract_action_id(normalized: str) -> str | None:
         aliases = {
             "dropzone": "action.dropzone.write.v1",
+            "inbox": "action.inbox.write.v1",
             "webhook": "action.webhook.trigger.v1",
             "restart": "action.openclaw.restart.v1",
         }
@@ -1137,6 +1177,135 @@ class TelegramCommandProcessor:
             if token in aliases:
                 return aliases[token]
         return None
+
+    def _handle_inbox_write(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        argument_text: str,
+    ) -> str:
+        try:
+            params = self._parse_inbox_write_arguments(argument_text)
+        except PolicyError as exc:
+            self._audit_channel_event(
+                event="telegram_command_rejected_invalid_params",
+                command="/inbox_write",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=str(exc),
+            )
+            return f"Parámetros inválidos: {exc}"
+
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="operator.write",
+            command="/inbox_write",
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id="action.inbox.write.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para action.inbox.write.v1."
+
+        effective = self.policy.get_effective_action_state("action.inbox.write.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            self._audit_channel_event(
+                event="telegram_command_rejected_action_not_allowed",
+                command="/inbox_write",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=f"action not allowed: {status}",
+                action_id="action.inbox.write.v1",
+            )
+            return f"La acción inbox.write no está habilitada (status={status})."
+
+        body = params["capture_body"]
+        body_bytes = len(body.encode("utf-8"))
+        summary = (
+            f"inbox.write | run_id={params['run_id']} | "
+            f"title={params['capture_title']} | body={body_bytes} B"
+        )
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        pending = PendingConfirmation(
+            intent="inbox_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="inbox_write",
+            action_id="action.inbox.write.v1",
+            params=params,
+            reason="telegram_inbox_write",
+        )
+        self.pending_confirmations[pending_key] = pending
+        session = self._get_active_session(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command="/inbox_write",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id="action.inbox.write.v1",
+            params={"intent": "inbox_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id="action.inbox.write.v1",
+            mode="assistant" if session is not None else "conversation",
+            intent="inbox_write",
+            text=(
+                f"Acción interpretada:\n{summary}\n"
+                "Responde 'si' para ejecutar o 'no' para cancelar."
+            ),
+        )
+
+    @staticmethod
+    def _parse_inbox_write_arguments(argument_text: str) -> dict[str, Any]:
+        if "::" not in argument_text:
+            raise PolicyError("uso: /inbox_write run_id=<id> title=<titulo> :: <cuerpo>")
+        header_part, _, body_part = argument_text.partition("::")
+        capture_body = body_part.strip()
+        if not capture_body:
+            raise PolicyError("capture_body no puede estar vacío")
+        tokens = header_part.strip().split()
+        if not tokens:
+            raise PolicyError("run_id y title son requeridos")
+        raw: dict[str, str] = {}
+        for token in tokens:
+            if "=" not in token:
+                raise PolicyError("parámetros de cabecera deben ser k=v")
+            key, value = token.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise PolicyError("clave vacía en parámetros")
+            import urllib.parse as _urlparse
+            raw[key] = _urlparse.unquote_plus(value.strip())
+        run_id = raw.get("run_id", "").strip()
+        if not run_id:
+            raise PolicyError("run_id requerido")
+        capture_title = raw.get("title", "").strip()
+        if not capture_title:
+            raise PolicyError("title requerido")
+        source_refs_raw = raw.get("source_refs", "").strip()
+        source_refs: list[str] | None = (
+            [r.strip() for r in source_refs_raw.split(",") if r.strip()]
+            if source_refs_raw
+            else None
+        )
+        return {
+            "run_id": run_id,
+            "capture_title": capture_title,
+            "capture_body": capture_body,
+            "source_refs": source_refs,
+        }
 
     @staticmethod
     def _split_command(text: str) -> tuple[str, str]:

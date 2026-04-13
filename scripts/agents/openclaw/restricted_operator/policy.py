@@ -14,6 +14,7 @@ from models import (
     OperatorRecord,
     TelegramConfig,
     TelegramPrincipalRecord,
+    VaultInboxConfig,
     WebhookTargetConfig,
 )
 
@@ -63,6 +64,7 @@ class PolicyStore:
         self.health_checks = self._load_health_checks(self.raw.get("health_checks", {}))
         self.operator_auth = self._load_operator_auth(self.raw.get("operator_auth", {}))
         self.telegram = self._load_telegram(self.raw.get("telegram", {}))
+        self.vault_inbox = self._load_vault_inbox(self.raw.get("vault_inbox", {}))
         self.state_store_path = Path(self.broker.state_store_path)
         self.runtime_state = self._load_runtime_state(self.state_store_path)
 
@@ -251,6 +253,14 @@ class PolicyStore:
                 payload.get("allowed_users", {}),
                 "telegram.allowed_users",
             ),
+        )
+
+    @staticmethod
+    def _load_vault_inbox(payload: dict) -> VaultInboxConfig:
+        if not isinstance(payload, dict):
+            raise PolicyError("vault_inbox must be an object")
+        return VaultInboxConfig(
+            vault_root=str(payload.get("vault_root", "")),
         )
 
     @staticmethod

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.request
 from collections import deque
@@ -9,6 +10,13 @@ from typing import Any
 
 from models import BrokerResult
 from policy import PolicyStore
+
+# vault_inbox_bridge lives one directory up (scripts/agents/openclaw/)
+_BRIDGE_DIR = Path(__file__).resolve().parent.parent
+if str(_BRIDGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_BRIDGE_DIR))
+
+from vault_inbox_bridge import VaultInboxBridgeError, invoke_inbox_write  # noqa: E402
 
 
 class ActionError(ValueError):
@@ -230,6 +238,55 @@ class DropzoneWriteAction(BaseAction):
         )
 
 
+class InboxWriteAction(BaseAction):
+    action_id = "action.inbox.write.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        body = params.get("capture_body", "")
+        return {
+            "run_id": params.get("run_id"),
+            "capture_title": params.get("capture_title"),
+            "body_bytes": len(body.encode("utf-8")) if isinstance(body, str) else 0,
+            "source_refs_count": len(params.get("source_refs") or []),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_inbox.vault_root is not configured in policy")
+        run_id = self._require_string(params.get("run_id"), "run_id", max_len=64)
+        capture_title = self._require_string(params.get("capture_title"), "capture_title", max_len=160)
+        capture_body = self._require_string(
+            params.get("capture_body"), "capture_body", max_len=self.policy.broker.max_write_bytes
+        )
+        source_refs = params.get("source_refs")
+        if source_refs is not None and not isinstance(source_refs, list):
+            raise ActionError("invalid_params", "source_refs must be a list or null")
+        try:
+            result = invoke_inbox_write(
+                vault_root=vault_root,
+                run_id=run_id,
+                capture_title=capture_title,
+                capture_body=capture_body,
+                source_refs=source_refs,
+            )
+        except VaultInboxBridgeError as exc:
+            raise ActionError(exc.code, exc.message) from exc
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result=result,
+            audit_params=self.audit_params(
+                {
+                    "run_id": run_id,
+                    "capture_title": capture_title,
+                    "capture_body": capture_body,
+                    "source_refs": source_refs,
+                }
+            ),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -237,5 +294,6 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         WebhookAction(policy),
         RestartOpenClawAction(policy),
         DropzoneWriteAction(policy),
+        InboxWriteAction(policy),
     ]
     return {action.action_id: action for action in actions}

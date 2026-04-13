@@ -8,6 +8,10 @@
     "max_tail_lines": 200,
     "max_write_bytes": 4096
   },
+  "vault_inbox": {
+    "vault_root": "",
+    "_comment": "Set vault_root to the absolute path of the Obsidian vault before enabling action.inbox.write.v1"
+  },
   "actions": {
     "action.health.general.v1": {
       "enabled": true,
@@ -58,6 +62,16 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Escritura acotada en drop-zone controlada"
+    },
+    "action.inbox.write.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "vault_inbox_write_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Escribe una nota create-only en Agent/Inbox_Agent del vault (requiere vault_root configurado)"
     }
   },
   "operator_auth": {

@@ -67,6 +67,11 @@ class OperatorAuthConfig:
 
 
 @dataclass(frozen=True)
+class VaultInboxConfig:
+    vault_root: str
+
+
+@dataclass(frozen=True)
 class TelegramPrincipalRecord:
     principal_id: str
     operator_id: str
