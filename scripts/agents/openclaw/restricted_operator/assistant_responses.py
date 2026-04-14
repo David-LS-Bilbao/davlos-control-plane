@@ -190,5 +190,50 @@ def render_obsidian_conversation_help() -> str:
         "- promueve <ref> a draft\n"
         "- promueve <ref> a report\n"
         "- promueve la ultima a draft\n"
+        "- muéstrame las últimas 5 notas\n"
+        "- busca <texto>\n"
+        "- resúmeme lo guardado hoy\n"
         "Los slash commands siguen funcionando: /draft_promote, /report_promote, /inbox_write."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Vault Read Chat renders
+# ---------------------------------------------------------------------------
+
+def render_vault_last_n(notes: list, n: int) -> str:
+    """Render a list of recent notes."""
+    if not notes:
+        return "No hay notas recientes en el vault."
+    rows = []
+    for info in notes:
+        label = info.source_dir.split("/")[-1]
+        rows.append(f"- [{label}] {info.note_name}  estado={info.capture_status}")
+        if info.title and info.title != info.note_name:
+            rows.append(f"  título: {info.title[:60]}")
+    return f"Últimas {len(notes)} nota(s):\n" + "\n".join(rows)
+
+
+def render_vault_search(notes: list, query: str) -> str:
+    """Render text search results."""
+    if not notes:
+        return f"No encontré notas con '{query}'."
+    rows = []
+    for info in notes:
+        label = info.source_dir.split("/")[-1]
+        rows.append(f"- [{label}] {info.note_name}")
+        if info.title:
+            rows.append(f"  título: {info.title[:60]}")
+        if info.excerpt:
+            rows.append(f"  …{info.excerpt[:80]}…")
+    return f"Resultados para '{query}' ({len(notes)} nota(s)):\n" + "\n".join(rows)
+
+
+def render_vault_summary_today(notes: list, today: str) -> str:
+    """Render today's notes summary."""
+    if not notes:
+        return f"No hay notas guardadas hoy ({today})."
+    rows = []
+    for info in notes:
+        rows.append(f"- {info.title[:50]}  estado={info.capture_status}")
+    return f"Guardado hoy {today} — {len(notes)} nota(s):\n" + "\n".join(rows)

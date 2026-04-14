@@ -34,6 +34,12 @@ if str(_DRAFT_BRIDGE_DIR) not in sys.path:
 from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
 from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
 from obsidian_intent_resolver import ResolveResult, resolve_note  # noqa: E402
+from vault_read_chat import (  # noqa: E402
+    list_last_n as vault_list_last_n,
+    search_notes as vault_search_notes,
+    summarize_today as vault_summarize_today,
+    READ_DIRS as VAULT_READ_DIRS,
+)
 
 
 class TelegramApiError(RuntimeError):
@@ -1725,6 +1731,31 @@ class TelegramCommandProcessor:
         "busca nota ",
         "estado de ",
     )
+    # Phase 5 — Vault Read Chat trigger sets
+    _OBS_LAST_N_PREFIXES: tuple[str, ...] = (
+        "muestrame las ultimas ",
+        "muestra las ultimas ",
+        "dame las ultimas ",
+        "las ultimas ",
+        "ultimas ",
+    )
+    _OBS_SEARCH_PREFIXES_P5: tuple[str, ...] = (
+        "busca ",
+        "buscar ",
+        "encuentra ",
+        "encontrar ",
+    )
+    _OBS_SUMMARY_TODAY_TRIGGERS = frozenset({
+        "resumeme lo guardado hoy",
+        "resume lo guardado hoy",
+        "que guarde hoy",
+        "que he guardado hoy",
+        "resumen de hoy",
+        "notas de hoy",
+        "guardado hoy",
+        "que capture hoy",
+        "que cree hoy",
+    })
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
@@ -1794,6 +1825,31 @@ class TelegramCommandProcessor:
                     "params": {},
                 }
 
+        # --- Phase 5: last N notes ---
+        for prefix in self._OBS_LAST_N_PREFIXES:
+            if normalized.startswith(prefix):
+                n = self._extract_number_from_text(normalized, default=5, max_val=10)
+                return {
+                    "intent": "obsidian.list_last_n",
+                    "action_id": "telegram.command",
+                    "params": {"n": n},
+                }
+
+        # --- Phase 5: text search (checked AFTER status prefixes above) ---
+        for prefix in self._OBS_SEARCH_PREFIXES_P5:
+            if normalized.startswith(prefix):
+                query = normalized[len(prefix):].strip()
+                if len(query) >= 2:
+                    return {
+                        "intent": "obsidian.search_text",
+                        "action_id": "telegram.command",
+                        "params": {"query": query},
+                    }
+
+        # --- Phase 5: summary today ---
+        if normalized in self._OBS_SUMMARY_TODAY_TRIGGERS:
+            return {"intent": "obsidian.summary_today", "action_id": "telegram.command", "params": {}}
+
         return None
 
     @staticmethod
@@ -1809,6 +1865,18 @@ class TelegramCommandProcessor:
         if not tokens:
             return None
         return " ".join(tokens)
+
+    @staticmethod
+    def _extract_number_from_text(text: str, *, default: int, max_val: int) -> int:
+        """Return first integer found in text, clamped to [1, max_val]."""
+        import re as _re
+        m = _re.search(r"\b(\d+)\b", text)
+        if m:
+            try:
+                return max(1, min(int(m.group(1)), max_val))
+            except ValueError:
+                pass
+        return default
 
     def _handle_obsidian_intent(
         self,
@@ -1894,6 +1962,44 @@ class TelegramCommandProcessor:
                 note_ref=intent["params"]["note_ref"],
                 target="report",
                 mode=mode,
+            )
+
+        # --- Phase 5: last N notes ---
+        if sub == "obsidian.list_last_n":
+            text = self._vault_list_last_n(
+                operator_id=operator_id,
+                n=intent["params"].get("n", 5),
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub, text=text,
+            )
+
+        # --- Phase 5: text search ---
+        if sub == "obsidian.search_text":
+            text = self._vault_search_text(
+                operator_id=operator_id,
+                query=intent["params"].get("query", ""),
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub, text=text,
+            )
+
+        # --- Phase 5: summary today ---
+        if sub == "obsidian.summary_today":
+            text = self._vault_summary_today(
+                operator_id=operator_id,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub, text=text,
             )
 
         # Unknown obsidian sub-intent — fall back to help
@@ -2088,6 +2194,62 @@ class TelegramCommandProcessor:
             mode=mode, intent=mutation,
             text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
         )
+
+    # -----------------------------------------------------------------------
+    # Phase 5 — Vault Read Chat handlers (read-only, no mutations)
+    # -----------------------------------------------------------------------
+
+    def _vault_read_check(self, operator_id: str) -> str | None:
+        """Return error string if operator lacks read permission or vault not set."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return "Operador no autorizado para leer el vault."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        return None
+
+    def _vault_list_last_n(
+        self, *, operator_id: str, n: int, chat_id: str, user_id: str
+    ) -> str:
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            notes = vault_list_last_n(vault_root, n)
+        except Exception as exc:
+            return f"Error leyendo vault: {exc}"
+        return assistant_responses.render_vault_last_n(notes, n)
+
+    def _vault_search_text(
+        self, *, operator_id: str, query: str, chat_id: str, user_id: str
+    ) -> str:
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        if not query or len(query) < 2:
+            return "Búsqueda demasiado corta. Usa al menos 2 caracteres."
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            notes = vault_search_notes(vault_root, query)
+        except Exception as exc:
+            return f"Error buscando en vault: {exc}"
+        return assistant_responses.render_vault_search(notes, query)
+
+    def _vault_summary_today(
+        self, *, operator_id: str, chat_id: str, user_id: str
+    ) -> str:
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            notes = vault_summarize_today(vault_root)
+        except Exception as exc:
+            return f"Error leyendo vault: {exc}"
+        return assistant_responses.render_vault_summary_today(notes, today)
 
     @staticmethod
     def _split_command(text: str) -> tuple[str, str]:
