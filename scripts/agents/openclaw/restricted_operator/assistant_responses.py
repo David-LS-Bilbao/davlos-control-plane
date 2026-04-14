@@ -134,3 +134,61 @@ def render_assistant_fallback() -> str:
         "- habilita/deshabilita una capacidad concreta\n"
         "Para salir del modo asistente usa /sleep."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Obsidian conversational layer renders
+# ---------------------------------------------------------------------------
+
+def render_obsidian_list(notes: list[dict], caption: str) -> str:
+    if not notes:
+        return f"No hay notas en estado {caption}."
+    rows = [f"- {n['note_name']}  run_id={n['run_id']}  {n.get('created_at_utc', '?')}" for n in notes]
+    return f"Notas {caption}:\n" + "\n".join(rows)
+
+
+def render_obsidian_note_status(info: dict) -> str:
+    return (
+        f"nota: {info['note_name']}\n"
+        f"run_id: {info['run_id']}\n"
+        f"estado: {info['capture_status']}\n"
+        f"creada: {info.get('created_at_utc', '?')}"
+    )
+
+
+def render_obsidian_ambiguous(candidates: tuple[str, ...], action: str) -> str:
+    rows = "\n".join(f"- {c}" for c in candidates)
+    return (
+        f"Hay varias notas que coinciden con esa referencia.\n"
+        f"Sé más específico para {action}:\n"
+        f"{rows}\n"
+        f"Usa el nombre de archivo exacto o un fragmento único del run_id."
+    )
+
+
+def render_obsidian_vault_not_configured() -> str:
+    return "vault_inbox.vault_root no está configurado en la policy."
+
+
+def render_obsidian_capture_clarify() -> str:
+    return (
+        "Para capturar una nota conversacionalmente usa el formato:\n"
+        "  guarda esta idea: <título> :: <cuerpo>\n"
+        "Ejemplo:\n"
+        "  guarda esta idea: Plan de hoy :: Revisar costes del proyecto\n"
+        "O usa el slash command: /inbox_write run_id=<id> title=<título> :: <cuerpo>"
+    )
+
+
+def render_obsidian_conversation_help() -> str:
+    return (
+        "Intenciones Obsidian disponibles:\n"
+        "- qué tengo pendiente\n"
+        "- qué está listo para report\n"
+        "- estado de <nota o run_id>\n"
+        "- guarda esta idea: <título> :: <cuerpo>\n"
+        "- promueve <ref> a draft\n"
+        "- promueve <ref> a report\n"
+        "- promueve la ultima a draft\n"
+        "Los slash commands siguen funcionando: /draft_promote, /report_promote, /inbox_write."
+    )

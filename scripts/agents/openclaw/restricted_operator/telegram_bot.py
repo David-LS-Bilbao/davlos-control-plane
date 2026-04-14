@@ -33,6 +33,7 @@ if str(_DRAFT_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_DRAFT_BRIDGE_DIR))
 from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
 from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
+from obsidian_intent_resolver import ResolveResult, resolve_note  # noqa: E402
 
 
 class TelegramApiError(RuntimeError):
@@ -571,6 +572,14 @@ class TelegramCommandProcessor:
                 operator_id=operator_id,
                 action_id="action.logs.read.v1",
                 params=intent["params"],
+            )
+        if intent["intent"].startswith("obsidian."):
+            return self._handle_obsidian_intent(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                intent=intent,
+                assistant_awake=session is not None,
             )
         if intent["intent"] == "unsupported":
             self._audit_channel_event(
@@ -1158,6 +1167,10 @@ class TelegramCommandProcessor:
         if reset_intent is not None:
             return reset_intent
 
+        obsidian_intent = self._match_obsidian_intent(normalized=normalized, original_text=text)
+        if obsidian_intent is not None:
+            return obsidian_intent
+
         return None
 
     @staticmethod
@@ -1669,6 +1682,412 @@ class TelegramCommandProcessor:
         if len(note_name) > 256:
             raise PolicyError("note_name demasiado largo")
         return {"note_name": note_name}
+
+    # -----------------------------------------------------------------------
+    # Phase 4 — Obsidian conversational layer
+    # -----------------------------------------------------------------------
+
+    # Trigger sets for list intents
+    _OBS_LIST_PENDING_TRIGGERS = frozenset({
+        "que tengo pendiente", "notas pendientes", "listar pendientes",
+        "que hay en inbox", "inbox pendiente", "notas en inbox",
+        "que esta pendiente", "listas para draft", "notas para draft",
+        "que esta listo para draft", "pending triage", "que hay pendiente",
+        "mostrar pendientes", "muestrame notas pendientes",
+    })
+    _OBS_LIST_REPORT_TRIGGERS = frozenset({
+        "listas para report", "notas para report", "listar report",
+        "que esta listo para report", "promoted to draft",
+        "notas en draft", "que esta en draft",
+        "mostrar report", "muestrame notas para report",
+    })
+    # Prefixes that signal a capture intent (checked against original_text.lower())
+    _OBS_CAPTURE_PREFIXES: tuple[str, ...] = (
+        "guarda esta idea:",
+        "guarda esta idea",
+        "anota esto:",
+        "anota esto",
+        "guarda una nota:",
+        "guarda una nota",
+        "captura:",
+        "guarda en obsidian:",
+        "guarda en obsidian",
+        "guarda nota:",
+        "guarda nota",
+    )
+    # Prefixes that signal a status query
+    _OBS_STATUS_PREFIXES: tuple[str, ...] = (
+        "que estado tiene ",
+        "estado de la nota ",
+        "busca la nota ",
+        "estado nota ",
+        "dime el estado de ",
+        "busca nota ",
+        "estado de ",
+    )
+
+    def _match_obsidian_intent(
+        self, *, normalized: str, original_text: str
+    ) -> dict[str, Any] | None:
+        """Return an obsidian.* intent dict or None if no match."""
+
+        # --- list pending (pending_triage) ---
+        if normalized in self._OBS_LIST_PENDING_TRIGGERS:
+            return {"intent": "obsidian.list_pending", "action_id": "telegram.command", "params": {}}
+
+        # --- list report-ready (promoted_to_draft) ---
+        if normalized in self._OBS_LIST_REPORT_TRIGGERS:
+            return {"intent": "obsidian.list_report_ready", "action_id": "telegram.command", "params": {}}
+
+        # --- note status query ---
+        for prefix in self._OBS_STATUS_PREFIXES:
+            if normalized.startswith(prefix):
+                ref = normalized[len(prefix):].strip()
+                if ref:
+                    return {
+                        "intent": "obsidian.show_note_status",
+                        "action_id": "telegram.command",
+                        "params": {"note_ref": ref},
+                    }
+
+        # --- promote to draft ---
+        if ("draft" in normalized and not "report" in normalized and
+                any(kw in normalized for kw in ("promueve", "promover", "promociona", "pasa a draft"))):
+            ref = self._extract_obsidian_note_ref(normalized, target="draft")
+            if ref is not None:
+                return {
+                    "intent": "obsidian.promote_to_draft",
+                    "action_id": "action.draft.promote.v1",
+                    "params": {"note_ref": ref},
+                }
+
+        # --- promote to report ---
+        if ("report" in normalized and
+                any(kw in normalized for kw in ("promueve", "promover", "promociona", "pasa a report"))):
+            ref = self._extract_obsidian_note_ref(normalized, target="report")
+            if ref is not None:
+                return {
+                    "intent": "obsidian.promote_to_report",
+                    "action_id": "action.report.promote.v1",
+                    "params": {"note_ref": ref},
+                }
+
+        # --- capture (require :: separator for title/body split) ---
+        orig_lower = original_text.lower().strip()
+        for prefix in self._OBS_CAPTURE_PREFIXES:
+            if orig_lower.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                if "::" in remainder:
+                    title, _, body = remainder.partition("::")
+                    title = title.strip()
+                    body = body.strip()
+                    if title and body:
+                        return {
+                            "intent": "obsidian.capture",
+                            "action_id": "action.inbox.write.v1",
+                            "params": {"title": title, "body": body},
+                        }
+                # Trigger detected but format incomplete → ask for clarification
+                return {
+                    "intent": "obsidian.capture_clarify",
+                    "action_id": "telegram.command",
+                    "params": {},
+                }
+
+        return None
+
+    @staticmethod
+    def _extract_obsidian_note_ref(normalized: str, *, target: str) -> str | None:
+        """Extract the note reference token(s) from a promote phrase.
+
+        Strips known command words and the target keyword; returns the remainder
+        as the note_ref string, or None if nothing useful remains.
+        """
+        stop = {target, "a", "la", "nota", "promueve", "promover", "pasa",
+                "al", "hacia", "promociona", "de", "el", "draft", "report", "hacia"}
+        tokens = [t for t in normalized.split() if t not in stop]
+        if not tokens:
+            return None
+        return " ".join(tokens)
+
+    def _handle_obsidian_intent(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        intent: dict[str, Any],
+        assistant_awake: bool,
+    ) -> str:
+        mode = "assistant" if assistant_awake else "conversation"
+        sub = intent["intent"]
+
+        if sub == "obsidian.list_pending":
+            text = self._obsidian_list_notes(
+                operator_id=operator_id,
+                list_fn=list_promotable_notes,
+                caption="pendientes (pending_triage)",
+                permission="operator.read",
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub, text=text,
+            )
+
+        if sub == "obsidian.list_report_ready":
+            text = self._obsidian_list_notes(
+                operator_id=operator_id,
+                list_fn=list_reportable_notes,
+                caption="listas para report (promoted_to_draft)",
+                permission="operator.read",
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub, text=text,
+            )
+
+        if sub == "obsidian.show_note_status":
+            text = self._obsidian_show_status(
+                note_ref=intent["params"]["note_ref"],
+                operator_id=operator_id,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub, text=text,
+            )
+
+        if sub == "obsidian.capture_clarify":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub, text=assistant_responses.render_obsidian_capture_clarify(),
+            )
+
+        if sub == "obsidian.capture":
+            return self._obsidian_capture(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                title=intent["params"]["title"],
+                body=intent["params"]["body"],
+                mode=mode,
+            )
+
+        if sub == "obsidian.promote_to_draft":
+            return self._obsidian_promote(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                note_ref=intent["params"]["note_ref"],
+                target="draft",
+                mode=mode,
+            )
+
+        if sub == "obsidian.promote_to_report":
+            return self._obsidian_promote(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                note_ref=intent["params"]["note_ref"],
+                target="report",
+                mode=mode,
+            )
+
+        # Unknown obsidian sub-intent — fall back to help
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="telegram.command", mode=mode,
+            intent=sub, text=assistant_responses.render_obsidian_conversation_help(),
+        )
+
+    def _obsidian_list_notes(
+        self,
+        *,
+        operator_id: str,
+        list_fn: Any,
+        caption: str,
+        permission: str,
+        chat_id: str,
+        user_id: str,
+    ) -> str:
+        if not self._can_operator(operator_id, permission):
+            return f"Operador no autorizado para listar notas ({permission})."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            notes = list_fn(vault_root=vault_root, max_results=10)
+        except Exception as exc:
+            return f"Error listando notas: {exc}"
+        return assistant_responses.render_obsidian_list(notes, caption)
+
+    def _obsidian_show_status(
+        self,
+        *,
+        note_ref: str,
+        operator_id: str,
+        chat_id: str,
+        user_id: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.read"):
+            return "Operador no autorizado para consultar estado de notas."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            resolved = resolve_note(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error resolviendo referencia: {exc}"
+        if resolved is None:
+            return "No hay notas en inbox o vault no accesible."
+        if resolved.ambiguous:
+            return assistant_responses.render_obsidian_ambiguous(
+                resolved.candidates, action="consultar estado"
+            )
+        if resolved.capture_status == "not_found":
+            return f"Nota no encontrada: {resolved.note_name}"
+        return assistant_responses.render_obsidian_note_status({
+            "note_name": resolved.note_name,
+            "run_id": resolved.run_id,
+            "capture_status": resolved.capture_status,
+            "created_at_utc": "?",
+        })
+
+    def _obsidian_capture(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        title: str,
+        body: str,
+        mode: str,
+    ) -> str:
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="operator.write",
+            command="obsidian.capture",
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id="action.inbox.write.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para action.inbox.write.v1."
+        effective = self.policy.get_effective_action_state("action.inbox.write.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            return f"La acción inbox.write no está habilitada (status={status})."
+        run_id = datetime.now(timezone.utc).strftime("tg-%Y%m%dT%H%M%S")
+        body_bytes = len(body.encode("utf-8"))
+        summary = f"inbox.write | run_id={run_id} | title={title} | body={body_bytes} B"
+        params = {
+            "run_id": run_id,
+            "capture_title": title,
+            "capture_body": body,
+            "source_refs": None,
+        }
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="inbox_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="inbox_write",
+            action_id="action.inbox.write.v1",
+            params=params,
+            reason="telegram_obsidian_capture",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command="obsidian.capture",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True,
+            action_id="action.inbox.write.v1",
+            params={"intent": "inbox_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.inbox.write.v1",
+            mode=mode, intent="inbox_write",
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_promote(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        note_ref: str,
+        target: str,  # "draft" or "report"
+        mode: str,
+    ) -> str:
+        action_id = "action.draft.promote.v1" if target == "draft" else "action.report.promote.v1"
+        mutation = "draft_promote" if target == "draft" else "report_promote"
+        command_name = f"obsidian.promote_{target}"
+
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="operator.write",
+            command=command_name,
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id=action_id,
+        )
+        if operator is None:
+            return f"Operador no autorizado para {action_id}."
+
+        effective = self.policy.get_effective_action_state(action_id)
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            return f"La acción {action_id} no está habilitada (status={status})."
+
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+
+        try:
+            resolved = resolve_note(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error resolviendo referencia: {exc}"
+
+        if resolved is None:
+            return "No hay notas en inbox o vault no accesible."
+        if resolved.ambiguous:
+            return assistant_responses.render_obsidian_ambiguous(
+                resolved.candidates, action=f"promover a {target}"
+            )
+        if resolved.capture_status == "not_found":
+            return f"Nota no encontrada: {note_ref}"
+
+        note_name = resolved.note_name
+        summary = f"{target}.promote | note={note_name} (estado: {resolved.capture_status})"
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent=mutation,
+            operator_id=operator_id,
+            summary=summary,
+            mutation=mutation,
+            action_id=action_id,
+            params={"note_name": note_name},
+            reason=f"telegram_obsidian_{target}_promote",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command=command_name,
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True,
+            action_id=action_id,
+            params={"intent": mutation, "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id=action_id,
+            mode=mode, intent=mutation,
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
 
     @staticmethod
     def _split_command(text: str) -> tuple[str, str]:
