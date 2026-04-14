@@ -94,6 +94,7 @@ class TelegramConfig:
     max_command_length: int
     allowed_chats: dict[str, TelegramPrincipalRecord]
     allowed_users: dict[str, TelegramPrincipalRecord]
+    assistant_idle_timeout_seconds: int = 300
 
 
 @dataclass

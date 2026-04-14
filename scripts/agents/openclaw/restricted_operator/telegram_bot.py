@@ -167,9 +167,12 @@ class TelegramCommandProcessor:
         self.pending_confirmations: dict[str, PendingConfirmation] = {}
         self.session_store = AssistantSessionStore()
         self.assistant_sessions = self.session_store.sessions
+        # Policy value is the base; env var overrides if explicitly set.
+        _policy_timeout = self.policy.telegram.assistant_idle_timeout_seconds
+        _env_timeout = os.environ.get("OPENCLAW_TELEGRAM_ASSISTANT_IDLE_TIMEOUT_SECONDS")
         self.assistant_idle_timeout_seconds = max(
             60,
-            int(os.environ.get("OPENCLAW_TELEGRAM_ASSISTANT_IDLE_TIMEOUT_SECONDS", "300")),
+            int(_env_timeout) if _env_timeout is not None else _policy_timeout,
         )
         self.llm_adapter = llm_adapter or LLMAdapter()
         self.intent_router = IntentRouter(

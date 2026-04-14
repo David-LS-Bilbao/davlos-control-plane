@@ -267,6 +267,10 @@ class PolicyStore:
                 payload.get("allowed_users", {}),
                 "telegram.allowed_users",
             ),
+            assistant_idle_timeout_seconds=max(
+                60,
+                int(payload.get("assistant_idle_timeout_seconds", 300)),
+            ),
         )
 
     @staticmethod
