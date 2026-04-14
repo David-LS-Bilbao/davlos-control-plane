@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -24,6 +25,14 @@ from intent_router import IntentRouter
 from llm_adapter import LLMAdapter
 from models import BrokerRequest, BrokerResult
 from policy import PolicyError, PolicyStore
+
+# list_promotable_notes is a read-only operation for /draft_promote listing.
+# The bridge lives in scripts/agents/openclaw/ (one level up from this module).
+_DRAFT_BRIDGE_DIR = Path(__file__).resolve().parent.parent
+if str(_DRAFT_BRIDGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_DRAFT_BRIDGE_DIR))
+from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
+from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
 
 
 class TelegramApiError(RuntimeError):
@@ -297,6 +306,20 @@ class TelegramCommandProcessor:
             )
         if command == "/inbox_write":
             return self._handle_inbox_write(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                argument_text=argument_text,
+            )
+        if command == "/draft_promote":
+            return self._handle_draft_promote(
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                argument_text=argument_text,
+            )
+        if command == "/report_promote":
+            return self._handle_report_promote(
                 chat_id=chat_id,
                 user_id=user_id,
                 operator_id=operator_id,
@@ -751,6 +774,74 @@ class TelegramCommandProcessor:
                 note_name = result.result.get("note_name", "?")
                 return f"Captura guardada.\nnota: {note_name}"
             return f"Error guardando captura.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "draft_promote":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.draft.promote.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            audit_p = {
+                "note_name": pending.params.get("note_name"),
+            }
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="/draft_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.draft.promote.v1",
+                params=audit_p,
+                result=result.to_dict() if result.ok else None,
+                error=result.error,
+                code=result.code,
+            )
+            if result.ok:
+                promoted_note = result.result.get("note_name", "?")
+                promoted_title = result.result.get("title", "?")
+                return (
+                    f"Nota promovida a draft.\n"
+                    f"nota: {promoted_note}\n"
+                    f"título: {promoted_title}\n"
+                    f"staging: STAGED_INPUT.md creado"
+                )
+            return f"Error promoviendo nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "report_promote":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.report.promote.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            audit_p = {
+                "note_name": pending.params.get("note_name"),
+            }
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="/report_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.report.promote.v1",
+                params=audit_p,
+                result=result.to_dict() if result.ok else None,
+                error=result.error,
+                code=result.code,
+            )
+            if result.ok:
+                promoted_note = result.result.get("note_name", "?")
+                promoted_title = result.result.get("title", "?")
+                return (
+                    f"Nota promovida a report.\n"
+                    f"nota: {promoted_note}\n"
+                    f"título: {promoted_title}\n"
+                    f"report: REPORT_INPUT.md creado"
+                )
+            return f"Error promoviendo a report.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1168,6 +1259,8 @@ class TelegramCommandProcessor:
         aliases = {
             "dropzone": "action.dropzone.write.v1",
             "inbox": "action.inbox.write.v1",
+            "draft_promote": "action.draft.promote.v1",
+            "report_promote": "action.report.promote.v1",
             "webhook": "action.webhook.trigger.v1",
             "restart": "action.openclaw.restart.v1",
         }
@@ -1306,6 +1399,276 @@ class TelegramCommandProcessor:
             "capture_body": capture_body,
             "source_refs": source_refs,
         }
+
+    def _handle_draft_promote(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        argument_text: str,
+    ) -> str:
+        # --- no arguments → list promotable notes ---
+        if not argument_text.strip():
+            vault_root = self.policy.vault_inbox.vault_root
+            if not vault_root:
+                return "vault_inbox.vault_root no configurado."
+            try:
+                notes = list_promotable_notes(vault_root=vault_root, max_results=10)
+            except Exception as exc:
+                self._audit_channel_event(
+                    event="telegram_command_rejected_error",
+                    command="/draft_promote",
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    ok=False,
+                    error=str(exc),
+                    action_id="action.draft.promote.v1",
+                )
+                return f"Error listando notas: {exc}"
+            if not notes:
+                return "No hay notas promotables (pending_triage) en inbox."
+            rows = [f"- {n['note_name']}  run_id={n['run_id']}  {n['created_at_utc']}" for n in notes]
+            return (
+                "Notas promotables:\n"
+                + "\n".join(rows)
+                + "\n\nUsa: /draft_promote note=<nombre_archivo>"
+            )
+
+        # --- with arguments → parse and confirm ---
+        try:
+            params = self._parse_draft_promote_arguments(argument_text)
+        except PolicyError as exc:
+            self._audit_channel_event(
+                event="telegram_command_rejected_invalid_params",
+                command="/draft_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=str(exc),
+            )
+            return f"Parámetros inválidos: {exc}"
+
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="operator.write",
+            command="/draft_promote",
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id="action.draft.promote.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para action.draft.promote.v1."
+
+        effective = self.policy.get_effective_action_state("action.draft.promote.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            self._audit_channel_event(
+                event="telegram_command_rejected_action_not_allowed",
+                command="/draft_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=f"action not allowed: {status}",
+                action_id="action.draft.promote.v1",
+            )
+            return f"La acción draft.promote no está habilitada (status={status})."
+
+        note_name = params["note_name"]
+        summary = f"draft.promote | note={note_name}"
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        pending = PendingConfirmation(
+            intent="draft_promote",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="draft_promote",
+            action_id="action.draft.promote.v1",
+            params=params,
+            reason="telegram_draft_promote",
+        )
+        self.pending_confirmations[pending_key] = pending
+        session = self._get_active_session(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command="/draft_promote",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id="action.draft.promote.v1",
+            params={"intent": "draft_promote", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id="action.draft.promote.v1",
+            mode="assistant" if session is not None else "conversation",
+            intent="draft_promote",
+            text=(
+                f"Acción interpretada:\n{summary}\n"
+                "Responde 'si' para ejecutar o 'no' para cancelar."
+            ),
+        )
+
+    @staticmethod
+    def _parse_draft_promote_arguments(argument_text: str) -> dict[str, Any]:
+        tokens = argument_text.strip().split()
+        if not tokens:
+            raise PolicyError("uso: /draft_promote note=<nombre_archivo>")
+        raw: dict[str, str] = {}
+        for token in tokens:
+            if "=" not in token:
+                raise PolicyError("parámetros deben ser k=v")
+            key, value = token.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise PolicyError("clave vacía en parámetros")
+            raw[key] = value.strip()
+        note_name = raw.get("note", "").strip()
+        if not note_name:
+            raise PolicyError("note requerido: /draft_promote note=<nombre_archivo>")
+        if len(note_name) > 256:
+            raise PolicyError("note_name demasiado largo")
+        return {"note_name": note_name}
+
+    def _handle_report_promote(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        argument_text: str,
+    ) -> str:
+        # --- no arguments → list reportable notes ---
+        if not argument_text.strip():
+            vault_root = self.policy.vault_inbox.vault_root
+            if not vault_root:
+                return "vault_inbox.vault_root no configurado."
+            try:
+                notes = list_reportable_notes(vault_root=vault_root, max_results=10)
+            except Exception as exc:
+                self._audit_channel_event(
+                    event="telegram_command_rejected_error",
+                    command="/report_promote",
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    operator_id=operator_id,
+                    ok=False,
+                    error=str(exc),
+                    action_id="action.report.promote.v1",
+                )
+                return f"Error listando notas: {exc}"
+            if not notes:
+                return "No hay notas en estado promoted_to_draft para reportar."
+            rows = [f"- {n['note_name']}  run_id={n['run_id']}  {n['created_at_utc']}" for n in notes]
+            return (
+                "Notas listas para report:\n"
+                + "\n".join(rows)
+                + "\n\nUsa: /report_promote note=<nombre_archivo>"
+            )
+
+        # --- with arguments → parse and confirm ---
+        try:
+            params = self._parse_report_promote_arguments(argument_text)
+        except PolicyError as exc:
+            self._audit_channel_event(
+                event="telegram_command_rejected_invalid_params",
+                command="/report_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=str(exc),
+            )
+            return f"Parámetros inválidos: {exc}"
+
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission="operator.write",
+            command="/report_promote",
+            chat_id=chat_id,
+            user_id=user_id,
+            action_id="action.report.promote.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para action.report.promote.v1."
+
+        effective = self.policy.get_effective_action_state("action.report.promote.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            self._audit_channel_event(
+                event="telegram_command_rejected_action_not_allowed",
+                command="/report_promote",
+                chat_id=chat_id,
+                user_id=user_id,
+                operator_id=operator_id,
+                ok=False,
+                error=f"action not allowed: {status}",
+                action_id="action.report.promote.v1",
+            )
+            return f"La acción report.promote no está habilitada (status={status})."
+
+        note_name = params["note_name"]
+        summary = f"report.promote | note={note_name}"
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        pending = PendingConfirmation(
+            intent="report_promote",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="report_promote",
+            action_id="action.report.promote.v1",
+            params=params,
+            reason="telegram_report_promote",
+        )
+        self.pending_confirmations[pending_key] = pending
+        session = self._get_active_session(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        self._audit_channel_event(
+            event="confirmation_requested",
+            command="/report_promote",
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            ok=True,
+            action_id="action.report.promote.v1",
+            params={"intent": "report_promote", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id,
+            user_id=user_id,
+            operator_id=operator_id,
+            action_id="action.report.promote.v1",
+            mode="assistant" if session is not None else "conversation",
+            intent="report_promote",
+            text=(
+                f"Acción interpretada:\n{summary}\n"
+                "Responde 'si' para ejecutar o 'no' para cancelar."
+            ),
+        )
+
+    @staticmethod
+    def _parse_report_promote_arguments(argument_text: str) -> dict[str, Any]:
+        tokens = argument_text.strip().split()
+        if not tokens:
+            raise PolicyError("uso: /report_promote note=<nombre_archivo>")
+        raw: dict[str, str] = {}
+        for token in tokens:
+            if "=" not in token:
+                raise PolicyError("parámetros deben ser k=v")
+            key, value = token.split("=", 1)
+            key = key.strip()
+            if not key:
+                raise PolicyError("clave vacía en parámetros")
+            raw[key] = value.strip()
+        note_name = raw.get("note", "").strip()
+        if not note_name:
+            raise PolicyError("note requerido: /report_promote note=<nombre_archivo>")
+        if len(note_name) > 256:
+            raise PolicyError("note_name demasiado largo")
+        return {"note_name": note_name}
 
     @staticmethod
     def _split_command(text: str) -> tuple[str, str]:

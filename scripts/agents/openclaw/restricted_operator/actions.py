@@ -17,6 +17,15 @@ if str(_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_BRIDGE_DIR))
 
 from vault_inbox_bridge import VaultInboxBridgeError, invoke_inbox_write  # noqa: E402
+from vault_draft_promote_bridge import (  # noqa: E402
+    VaultDraftPromoteBridgeError,
+    invoke_draft_promote,
+    list_promotable_notes,
+)
+from vault_report_promote_bridge import (  # noqa: E402
+    VaultReportPromoteBridgeError,
+    invoke_report_promote,
+)
 
 
 class ActionError(ValueError):
@@ -287,6 +296,62 @@ class InboxWriteAction(BaseAction):
         )
 
 
+class DraftPromoteAction(BaseAction):
+    action_id = "action.draft.promote.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_name": params.get("note_name"),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_inbox.vault_root is not configured in policy")
+        note_name = self._require_string(params.get("note_name"), "note_name", max_len=256)
+        try:
+            result = invoke_draft_promote(
+                vault_root=vault_root,
+                note_name=note_name,
+            )
+        except VaultDraftPromoteBridgeError as exc:
+            raise ActionError(exc.code, exc.message) from exc
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result=result,
+            audit_params=self.audit_params({"note_name": note_name}),
+        )
+
+
+class ReportPromoteAction(BaseAction):
+    action_id = "action.report.promote.v1"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_name": params.get("note_name"),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_inbox.vault_root is not configured in policy")
+        note_name = self._require_string(params.get("note_name"), "note_name", max_len=256)
+        try:
+            result = invoke_report_promote(
+                vault_root=vault_root,
+                note_name=note_name,
+            )
+        except VaultReportPromoteBridgeError as exc:
+            raise ActionError(exc.code, exc.message) from exc
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result=result,
+            audit_params=self.audit_params({"note_name": note_name}),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -295,5 +360,7 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         RestartOpenClawAction(policy),
         DropzoneWriteAction(policy),
         InboxWriteAction(policy),
+        DraftPromoteAction(policy),
+        ReportPromoteAction(policy),
     ]
     return {action.action_id: action for action in actions}

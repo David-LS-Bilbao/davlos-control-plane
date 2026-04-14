@@ -72,6 +72,26 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Escribe una nota create-only en Agent/Inbox_Agent del vault (requiere vault_root configurado)"
+    },
+    "action.draft.promote.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "draft_promote_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Promueve una nota de Agent/Inbox_Agent a draft escribiendo STAGED_INPUT.md y marcando capture_status (requiere vault_root configurado)"
+    },
+    "action.report.promote.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "report_promote_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Promueve una nota promoted_to_draft a report escribiendo REPORT_INPUT.md y marcando capture_status (requiere vault_root configurado)"
     }
   },
   "operator_auth": {
