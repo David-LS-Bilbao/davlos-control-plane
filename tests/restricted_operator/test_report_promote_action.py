@@ -494,7 +494,8 @@ class TestReportPromoteTelegramCommand(unittest.TestCase):
         self.assertIn("report.promote", reply)
         reply2 = self.proc.handle_text(chat_id="1001", user_id="", text="si")
         # Action should fail because status is pending_triage, not promoted_to_draft
-        self.assertIn("error", reply2.lower())
+        # Phase 6: error message is conversational ("No puedo promover…")
+        self.assertIn("promoted_to_draft", reply2.lower())
         self.assertFalse((self.inbox / "REPORT_INPUT.md").exists())
 
 

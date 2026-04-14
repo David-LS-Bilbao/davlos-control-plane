@@ -33,7 +33,8 @@ if str(_DRAFT_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_DRAFT_BRIDGE_DIR))
 from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
 from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
-from obsidian_intent_resolver import ResolveResult, resolve_note  # noqa: E402
+from obsidian_intent_resolver import ResolveResult, get_note_status, resolve_note  # noqa: E402
+from vault_artifact_reader import read_pending_artifacts  # noqa: E402
 from vault_read_chat import (  # noqa: E402
     list_last_n as vault_list_last_n,
     search_notes as vault_search_notes,
@@ -822,7 +823,11 @@ class TelegramCommandProcessor:
                     f"título: {promoted_title}\n"
                     f"staging: STAGED_INPUT.md creado"
                 )
-            return f"Error promoviendo nota.\ncode={result.code}\nerror={result.error}"
+            return self._render_promote_error(
+                note_name=pending.params.get("note_name", "nota"),
+                code=result.code or "unknown",
+                target="draft",
+            )
         elif pending.mutation == "report_promote":
             result = self.broker.execute(
                 BrokerRequest(
@@ -856,7 +861,11 @@ class TelegramCommandProcessor:
                     f"título: {promoted_title}\n"
                     f"report: REPORT_INPUT.md creado"
                 )
-            return f"Error promoviendo a report.\ncode={result.code}\nerror={result.error}"
+            return self._render_promote_error(
+                note_name=pending.params.get("note_name", "nota"),
+                code=result.code or "unknown",
+                target="report",
+            )
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1756,11 +1765,64 @@ class TelegramCommandProcessor:
         "que capture hoy",
         "que cree hoy",
     })
+    # Phase 6 — Operational Hygiene trigger sets
+    _OBS_HELP_TRIGGERS = frozenset({
+        "que puedes hacer con obsidian",
+        "ayuda obsidian",
+        "ayuda vault",
+        "que puedo hacer con obsidian",
+        "que puedo hacer con el vault",
+        "que puedes hacer con el vault",
+        "help obsidian",
+        "help vault",
+        "obsidian help",
+        "vault help",
+        "comandos obsidian",
+        "comandos vault",
+    })
+    _OBS_PENDING_ARTIFACTS_TRIGGERS = frozenset({
+        "que artefactos pendientes hay",
+        "hay artefactos pendientes",
+        "artefactos pendientes",
+        "staged input pendiente",
+        "report input pendiente",
+        "que hay en cola",
+        "que esta en cola",
+        "pipeline bloqueado",
+        "hay algo en cola",
+        "que bloquea el pipeline",
+    })
+    _OBS_WHAT_BLOCKS_PREFIXES: tuple[str, ...] = (
+        "que bloquea ",
+        "por que no puedo promover ",
+        "por que no se puede promover ",
+        "que impide promover ",
+        "que le pasa a ",
+    )
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
     ) -> dict[str, Any] | None:
         """Return an obsidian.* intent dict or None if no match."""
+
+        # --- Phase 6: obsidian help ---
+        if normalized in self._OBS_HELP_TRIGGERS:
+            return {"intent": "obsidian.help", "action_id": "telegram.command", "params": {}}
+
+        # --- Phase 6: pending pipeline artifacts (read-only) ---
+        if normalized in self._OBS_PENDING_ARTIFACTS_TRIGGERS:
+            return {"intent": "obsidian.pending_artifacts", "action_id": "telegram.command", "params": {}}
+
+        # --- Phase 6: what blocks a note ---
+        for prefix in self._OBS_WHAT_BLOCKS_PREFIXES:
+            if normalized.startswith(prefix):
+                ref = normalized[len(prefix):].strip()
+                if ref:
+                    return {
+                        "intent": "obsidian.what_blocks",
+                        "action_id": "telegram.command",
+                        "params": {"note_ref": ref},
+                    }
 
         # --- list pending (pending_triage) ---
         if normalized in self._OBS_LIST_PENDING_TRIGGERS:
@@ -1889,6 +1951,35 @@ class TelegramCommandProcessor:
     ) -> str:
         mode = "assistant" if assistant_awake else "conversation"
         sub = intent["intent"]
+
+        # --- Phase 6: obsidian help ---
+        if sub == "obsidian.help":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub, text=assistant_responses.render_obsidian_help(),
+            )
+
+        # --- Phase 6: pending pipeline artifacts (read-only) ---
+        if sub == "obsidian.pending_artifacts":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub,
+                text=self._obsidian_pending_artifacts(operator_id=operator_id),
+            )
+
+        # --- Phase 6: what blocks a note ---
+        if sub == "obsidian.what_blocks":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode,
+                intent=sub,
+                text=self._obsidian_what_blocks(
+                    operator_id=operator_id,
+                    note_ref=intent["params"]["note_ref"],
+                ),
+            )
 
         if sub == "obsidian.list_pending":
             text = self._obsidian_list_notes(
@@ -2054,12 +2145,15 @@ class TelegramCommandProcessor:
                 resolved.candidates, action="consultar estado"
             )
         if resolved.capture_status == "not_found":
-            return f"Nota no encontrada: {resolved.note_name}"
-        return assistant_responses.render_obsidian_note_status({
+            return assistant_responses.render_error_note_not_found(resolved.note_name)
+        # Phase 6: enrich with created_at_utc from get_note_status
+        full_status = get_note_status(vault_root, resolved.note_name) or {}
+        return assistant_responses.render_obsidian_note_status_v2({
             "note_name": resolved.note_name,
             "run_id": resolved.run_id,
             "capture_status": resolved.capture_status,
-            "created_at_utc": "?",
+            "created_at_utc": full_status.get("created_at_utc", "?"),
+            "source_dir": "Agent/Inbox_Agent",
         })
 
     def _obsidian_capture(
@@ -2250,6 +2344,67 @@ class TelegramCommandProcessor:
         except Exception as exc:
             return f"Error leyendo vault: {exc}"
         return assistant_responses.render_vault_summary_today(notes, today)
+
+    # -----------------------------------------------------------------------
+    # Phase 6 — Operational Hygiene helpers
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _render_promote_error(*, note_name: str, code: str, target: str) -> str:
+        """Return a conversational error message for a promotion failure."""
+        if code == "staging_conflict":
+            return assistant_responses.render_error_staging_conflict(note_name)
+        if code == "report_conflict":
+            return assistant_responses.render_error_report_conflict(note_name)
+        if code == "not_promotable":
+            return assistant_responses.render_error_not_promotable(note_name)
+        if code == "not_reportable":
+            return assistant_responses.render_error_not_reportable(note_name)
+        if code == "not_found":
+            return assistant_responses.render_error_note_not_found(note_name)
+        return f"Error promoviendo a {target}.\ncode={code}\nnota={note_name}"
+
+    def _obsidian_pending_artifacts(self, *, operator_id: str) -> str:
+        """Read-only: show presence of STAGED_INPUT.md and REPORT_INPUT.md."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return "Operador no autorizado para leer el vault."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            status = read_pending_artifacts(vault_root)
+        except Exception as exc:
+            return f"Error inspeccionando artefactos: {exc}"
+        return assistant_responses.render_pending_artifacts(
+            staged_exists=status.staged_exists,
+            report_exists=status.report_exists,
+            staged_note_name=status.staged_note_name,
+            report_note_name=status.report_note_name,
+        )
+
+    def _obsidian_what_blocks(self, *, operator_id: str, note_ref: str) -> str:
+        """Read-only: explain what blocks a note from promotion."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return "Operador no autorizado para leer el vault."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            resolved = resolve_note(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error resolviendo referencia: {exc}"
+        if resolved is None:
+            return "No hay notas en inbox o vault no accesible."
+        if resolved.ambiguous:
+            return assistant_responses.render_obsidian_ambiguous(
+                resolved.candidates, action="consultar bloqueo"
+            )
+        if resolved.capture_status == "not_found":
+            return assistant_responses.render_error_note_not_found(note_ref)
+        return assistant_responses.render_what_blocks(
+            note_name=resolved.note_name,
+            capture_status=resolved.capture_status,
+        )
 
     @staticmethod
     def _split_command(text: str) -> tuple[str, str]:

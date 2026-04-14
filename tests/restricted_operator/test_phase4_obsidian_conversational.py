@@ -512,7 +512,8 @@ class TestObsidianConversationalFlow(unittest.TestCase):
         self.proc.handle_text(chat_id="1001", user_id="", text="promueve la ultima a report")
         reply = self.proc.handle_text(chat_id="1001", user_id="", text="si")
         # Broker rejects because status is pending_triage, not promoted_to_draft
-        self.assertIn("error", reply.lower())
+        # Phase 6: error message is conversational ("No puedo promover…")
+        self.assertIn("promoted_to_draft", reply.lower())
 
     # --- slash commands still work ---
 
