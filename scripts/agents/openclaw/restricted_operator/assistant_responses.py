@@ -388,6 +388,28 @@ def render_pending_artifacts(
     return "\n".join(lines)
 
 
+def render_wake_vault_context(
+    *,
+    pending_count: int | None,
+    staged_exists: bool | None,
+    report_exists: bool | None,
+    last_event: str | None,
+) -> str:
+    """Concise vault summary appended to the /wake message."""
+    lines = ["Vault:"]
+    if pending_count is not None:
+        lines.append(f"- pending_triage: {pending_count} nota(s)")
+    if staged_exists is not None:
+        staged = "PRESENTE" if staged_exists else "libre"
+        report = "PRESENTE" if report_exists else "libre"
+        lines.append(f"- STAGED_INPUT.md: {staged}  REPORT_INPUT.md: {report}")
+    if last_event:
+        lines.append(f"- último evento: {last_event}")
+    if len(lines) == 1:
+        return ""
+    return "\n" + "\n".join(lines)
+
+
 def render_what_blocks(note_name: str, capture_status: str) -> str:
     """Explain what blocks a note from its next promotion step."""
     if capture_status == "pending_triage":

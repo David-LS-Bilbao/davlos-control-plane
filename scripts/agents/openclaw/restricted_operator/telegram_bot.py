@@ -165,6 +165,8 @@ class TelegramCommandProcessor:
             token=token,
         )
         self.pending_confirmations: dict[str, PendingConfirmation] = {}
+        # C — session note memory: last resolved note per chat:user pair
+        self._session_last_note: dict[str, str] = {}
         self.session_store = AssistantSessionStore()
         self.assistant_sessions = self.session_store.sessions
         # Policy value is the base; env var overrides if explicitly set.
@@ -791,7 +793,11 @@ class TelegramCommandProcessor:
             )
             if result.ok:
                 note_name = result.result.get("note_name", "?")
-                return f"Captura guardada.\nnota: {note_name}"
+                # B — post-action suggestion: capture → suggest draft promote
+                return (
+                    f"Captura guardada.\nnota: {note_name}\n"
+                    f"→ Cuando quieras, usa 'promueve {note_name} a draft'."
+                )
             return f"Error guardando captura.\ncode={result.code}\nerror={result.error}"
         elif pending.mutation == "draft_promote":
             result = self.broker.execute(
@@ -820,11 +826,13 @@ class TelegramCommandProcessor:
             if result.ok:
                 promoted_note = result.result.get("note_name", "?")
                 promoted_title = result.result.get("title", "?")
+                # B — post-action suggestion: draft → suggest report when pipeline is free
                 return (
                     f"Nota promovida a draft.\n"
                     f"nota: {promoted_note}\n"
                     f"título: {promoted_title}\n"
-                    f"staging: STAGED_INPUT.md creado"
+                    f"staging: STAGED_INPUT.md creado\n"
+                    "→ Cuando el pipeline consuma STAGED_INPUT.md, usa 'promueve a report'."
                 )
             return self._render_promote_error(
                 note_name=pending.params.get("note_name", "nota"),
@@ -858,11 +866,13 @@ class TelegramCommandProcessor:
             if result.ok:
                 promoted_note = result.result.get("note_name", "?")
                 promoted_title = result.result.get("title", "?")
+                # B — post-action suggestion: report → pipeline follow-up
                 return (
                     f"Nota promovida a report.\n"
                     f"nota: {promoted_note}\n"
                     f"título: {promoted_title}\n"
-                    f"report: REPORT_INPUT.md creado"
+                    f"report: REPORT_INPUT.md creado\n"
+                    "→ El pipeline procesará REPORT_INPUT.md. Usa 'qué artefactos pendientes hay' para seguimiento."
                 )
             return self._render_promote_error(
                 note_name=pending.params.get("note_name", "nota"),
@@ -1086,6 +1096,21 @@ class TelegramCommandProcessor:
     @staticmethod
     def _pending_key(*, chat_id: str, user_id: str) -> str:
         return f"{chat_id}:{user_id}"
+
+    # C — note alias helpers
+    _NOTE_ALIASES: frozenset[str] = frozenset({"esa", "la misma", "esa nota", "misma nota"})
+
+    def _save_session_note(self, *, chat_id: str, user_id: str, note_name: str) -> None:
+        """Remember the last resolved note for this session."""
+        self._session_last_note[self._pending_key(chat_id=chat_id, user_id=user_id)] = note_name
+
+    def _resolve_note_alias(self, *, note_ref: str, chat_id: str, user_id: str) -> str:
+        """If note_ref is a session alias, substitute stored note name."""
+        if note_ref.strip().lower() in self._NOTE_ALIASES:
+            stored = self._session_last_note.get(self._pending_key(chat_id=chat_id, user_id=user_id))
+            if stored:
+                return stored
+        return note_ref
 
     @staticmethod
     def _now_monotonic() -> float:
@@ -1974,13 +1999,18 @@ class TelegramCommandProcessor:
 
         # --- Phase 6: what blocks a note ---
         if sub == "obsidian.what_blocks":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
             return self._response(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 action_id="telegram.command", mode=mode,
                 intent=sub,
                 text=self._obsidian_what_blocks(
                     operator_id=operator_id,
-                    note_ref=intent["params"]["note_ref"],
+                    note_ref=resolved_ref,
+                    chat_id=chat_id,
+                    user_id=user_id,
                 ),
             )
 
@@ -2015,8 +2045,11 @@ class TelegramCommandProcessor:
             )
 
         if sub == "obsidian.show_note_status":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
             text = self._obsidian_show_status(
-                note_ref=intent["params"]["note_ref"],
+                note_ref=resolved_ref,
                 operator_id=operator_id,
                 chat_id=chat_id,
                 user_id=user_id,
@@ -2043,17 +2076,23 @@ class TelegramCommandProcessor:
             )
 
         if sub == "obsidian.promote_to_draft":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
             return self._obsidian_promote(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
-                note_ref=intent["params"]["note_ref"],
+                note_ref=resolved_ref,
                 target="draft",
                 mode=mode,
             )
 
         if sub == "obsidian.promote_to_report":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
             return self._obsidian_promote(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
-                note_ref=intent["params"]["note_ref"],
+                note_ref=resolved_ref,
                 target="report",
                 mode=mode,
             )
@@ -2149,6 +2188,8 @@ class TelegramCommandProcessor:
             )
         if resolved.capture_status == "not_found":
             return assistant_responses.render_error_note_not_found(resolved.note_name)
+        # C — save last resolved note in session
+        self._save_session_note(chat_id=chat_id, user_id=user_id, note_name=resolved.note_name)
         # Phase 6: enrich with created_at_utc from get_note_status
         full_status = get_note_status(vault_root, resolved.note_name) or {}
         return assistant_responses.render_obsidian_note_status_v2({
@@ -2266,6 +2307,8 @@ class TelegramCommandProcessor:
             return f"Nota no encontrada: {note_ref}"
 
         note_name = resolved.note_name
+        # C — save last resolved note in session
+        self._save_session_note(chat_id=chat_id, user_id=user_id, note_name=note_name)
         summary = f"{target}.promote | note={note_name} (estado: {resolved.capture_status})"
         pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
         self.pending_confirmations[pending_key] = PendingConfirmation(
@@ -2385,7 +2428,9 @@ class TelegramCommandProcessor:
             report_note_name=status.report_note_name,
         )
 
-    def _obsidian_what_blocks(self, *, operator_id: str, note_ref: str) -> str:
+    def _obsidian_what_blocks(
+        self, *, operator_id: str, note_ref: str, chat_id: str = "", user_id: str = ""
+    ) -> str:
         """Read-only: explain what blocks a note from promotion."""
         if not self._can_operator(operator_id, "operator.read"):
             return "Operador no autorizado para leer el vault."
@@ -2404,6 +2449,9 @@ class TelegramCommandProcessor:
             )
         if resolved.capture_status == "not_found":
             return assistant_responses.render_error_note_not_found(note_ref)
+        # C — save last resolved note in session
+        if chat_id and user_id:
+            self._save_session_note(chat_id=chat_id, user_id=user_id, note_name=resolved.note_name)
         return assistant_responses.render_what_blocks(
             note_name=resolved.note_name,
             capture_status=resolved.capture_status,
@@ -2553,6 +2601,15 @@ class TelegramCommandProcessor:
             ok=True,
             params={"timeout_seconds": self.assistant_idle_timeout_seconds},
         )
+        # A — vault context on wake
+        vault_ctx = self._build_wake_vault_context(operator_id=operator_id)
+        wake_text = (
+            "Asistente despierto.\n"
+            f"Timeout por inactividad: {self.assistant_idle_timeout_seconds}s.\n"
+            "Puedes pedirme estado general, capacidades activas, auditoría reciente, logs permitidos,\n"
+            "explicación del estado o propuestas de acción. Para salir: /sleep."
+            + vault_ctx
+        )
         return self._response(
             chat_id=chat_id,
             user_id=user_id,
@@ -2560,12 +2617,53 @@ class TelegramCommandProcessor:
             action_id="telegram.command",
             mode="assistant",
             intent="assistant_wake",
-            text=(
-                "Asistente despierto.\n"
-                f"Timeout por inactividad: {self.assistant_idle_timeout_seconds}s.\n"
-                "Puedes pedirme estado general, capacidades activas, auditoría reciente, logs permitidos,\n"
-                "explicación del estado o propuestas de acción. Para salir: /sleep."
-            ),
+            text=wake_text,
+        )
+
+    def _build_wake_vault_context(self, *, operator_id: str) -> str:
+        """A — Collect vault summary for the /wake message. Soft failures silently omit fields."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return ""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return ""
+        pending_count: int | None = None
+        staged_exists: bool | None = None
+        report_exists: bool | None = None
+        last_event: str | None = None
+        try:
+            notes = list_promotable_notes(vault_root=vault_root, max_results=50)
+            pending_count = len(notes)
+        except Exception:
+            pass
+        try:
+            arts = read_pending_artifacts(vault_root)
+            staged_exists = arts.staged_exists
+            report_exists = arts.report_exists
+        except Exception:
+            pass
+        try:
+            audit_path = Path(self.policy.broker.audit_log_path)
+            if audit_path.exists():
+                raw_lines = audit_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for raw in reversed(raw_lines):
+                    if raw.strip():
+                        try:
+                            p = json.loads(raw)
+                            ts = p.get("ts", "")[:19]
+                            ev = p.get("event", "?")
+                            aid = p.get("action_id", "-")
+                            last_event = f"{ev} | {aid} | {ts}"
+                        except Exception:
+                            pass
+                        break
+        except Exception:
+            pass
+        return assistant_responses.render_wake_vault_context(
+            pending_count=pending_count,
+            staged_exists=staged_exists,
+            report_exists=report_exists,
+            last_event=last_event,
         )
 
     def _sleep_assistant(
@@ -2577,7 +2675,10 @@ class TelegramCommandProcessor:
         reason: str,
     ) -> str:
         existed = self.session_store.sleep(chat_id=chat_id, user_id=user_id)
-        self.pending_confirmations.pop(self._pending_key(chat_id=chat_id, user_id=user_id), None)
+        key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations.pop(key, None)
+        # C — clear session note memory on sleep
+        self._session_last_note.pop(key, None)
         if existed is not None:
             self._audit_channel_event(
                 event="assistant_sleep",
@@ -2733,7 +2834,44 @@ class TelegramCommandProcessor:
 
     def _render_assistant_suggestion(self, *, operator_id: str) -> str:
         states = self.policy.list_effective_action_states()
-        return assistant_responses.render_assistant_suggestion(operator_id=operator_id, states=states)
+        base = assistant_responses.render_assistant_suggestion(operator_id=operator_id, states=states)
+        # D — append vault context when available
+        vault_addendum = self._build_suggest_vault_context(operator_id=operator_id)
+        if vault_addendum:
+            return base + vault_addendum
+        return base
+
+    def _build_suggest_vault_context(self, *, operator_id: str) -> str:
+        """D — Vault-aware context for 'qué propones'."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return ""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return ""
+        lines = []
+        try:
+            pending = list_promotable_notes(vault_root=vault_root, max_results=50)
+            if pending:
+                lines.append(f"- Hay {len(pending)} nota(s) en pending_triage esperando draft_promote.")
+        except Exception:
+            pass
+        try:
+            reportable = list_reportable_notes(vault_root=vault_root, max_results=50)
+            if reportable:
+                lines.append(f"- Hay {len(reportable)} nota(s) en promoted_to_draft esperando report_promote.")
+        except Exception:
+            pass
+        try:
+            arts = read_pending_artifacts(vault_root)
+            if arts.staged_exists:
+                lines.append("- STAGED_INPUT.md presente: el pipeline de draft aún no ha consumido el artefacto.")
+            if arts.report_exists:
+                lines.append("- REPORT_INPUT.md presente: el pipeline de report aún no ha consumido el artefacto.")
+        except Exception:
+            pass
+        if not lines:
+            return ""
+        return "\nVault:\n" + "\n".join(lines)
 
     @staticmethod
     def _render_assistant_identity(*, operator_id: str) -> str:
