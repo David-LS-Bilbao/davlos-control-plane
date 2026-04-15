@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -352,6 +354,132 @@ class ReportPromoteAction(BaseAction):
         )
 
 
+class NoteCreateAction(BaseAction):
+    """E3 — Create a note in any non-reserved vault folder."""
+
+    action_id = "action.note.create.v1"
+    _EXCLUDED_FOLDERS: frozenset[str] = frozenset({"Agent", "Agent/Inbox_Agent", ".obsidian", ".git"})
+    _SLUG_RE = re.compile(r"[^\w\-]")
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        body = params.get("body", "")
+        return {
+            "folder": params.get("folder"),
+            "title": params.get("title"),
+            "body_bytes": len(body.encode("utf-8")) if isinstance(body, str) else 0,
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+        folder = self._require_string(params.get("folder"), "folder", max_len=128)
+        title = self._require_string(params.get("title"), "title", max_len=160)
+        body = self._require_string(params.get("body"), "body", max_len=self.policy.broker.max_write_bytes)
+
+        if folder in self._EXCLUDED_FOLDERS or folder.startswith("Agent"):
+            raise ActionError("forbidden", "folder is reserved for pipeline use")
+        if ".." in folder or folder.startswith("/"):
+            raise ActionError("invalid_params", "folder must be a relative path without traversal")
+
+        root = Path(vault_root).resolve()
+        target_dir = (root / folder).resolve()
+        if not str(target_dir).startswith(str(root)):
+            raise ActionError("invalid_params", "folder resolves outside vault")
+        if not target_dir.is_dir():
+            raise ActionError("not_found", f"folder '{folder}' does not exist in vault")
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "Z"
+        slug = self._SLUG_RE.sub("_", title.lower())[:40].strip("_")
+        filename = f"{ts}_{slug}.md"
+        note_path = target_dir / filename
+        if note_path.exists():
+            raise ActionError("conflict", "note already exists (timestamp collision)")
+
+        created_ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        content = (
+            "---\n"
+            f'title: "{title}"\n'
+            f'created_at_utc: "{created_ts}"\n'
+            f'folder: "{folder}"\n'
+            "---\n\n"
+            f"# {title}\n\n"
+            f"{body}\n"
+        )
+        note_path.write_text(content, encoding="utf-8")
+        try:
+            rel_path = str(note_path.relative_to(root))
+        except ValueError:
+            rel_path = f"{folder}/{filename}"
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={"note_name": filename, "folder": folder, "path": rel_path},
+            audit_params=self.audit_params({"folder": folder, "title": title, "body": body}),
+        )
+
+
+class NoteArchiveAction(BaseAction):
+    """E4 — Move a note to the archive folder (non-destructive)."""
+
+    action_id = "action.note.archive.v1"
+    DEFAULT_ARCHIVE_FOLDER = "50_Archivado"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_path": params.get("note_path"),
+            "destination_folder": params.get("destination_folder", self.DEFAULT_ARCHIVE_FOLDER),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+        note_path_str = self._require_string(params.get("note_path"), "note_path", max_len=512)
+        destination_folder = params.get("destination_folder") or self.DEFAULT_ARCHIVE_FOLDER
+
+        if ".." in note_path_str or note_path_str.startswith("/"):
+            raise ActionError("invalid_params", "note_path must be relative without traversal")
+        if isinstance(destination_folder, str) and (".." in destination_folder or destination_folder.startswith("/")):
+            raise ActionError("invalid_params", "destination_folder must be relative without traversal")
+
+        root = Path(vault_root).resolve()
+        source = (root / note_path_str).resolve()
+        if not str(source).startswith(str(root)):
+            raise ActionError("invalid_params", "note_path resolves outside vault")
+        if not source.is_file():
+            raise ActionError("not_found", f"note not found: {note_path_str}")
+
+        dest_dir = (root / str(destination_folder)).resolve()
+        if not str(dest_dir).startswith(str(root)):
+            raise ActionError("invalid_params", "destination resolves outside vault")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        dest_path = dest_dir / source.name
+        if dest_path.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dest_path = dest_dir / f"{source.stem}_{ts}{source.suffix}"
+
+        source.rename(dest_path)
+        try:
+            from_rel = str(source.relative_to(root))
+            to_rel = str(dest_path.relative_to(root))
+        except ValueError:
+            from_rel = note_path_str
+            to_rel = f"{destination_folder}/{dest_path.name}"
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "note_name": source.name,
+                "from_path": from_rel,
+                "to_path": to_rel,
+                "destination_folder": str(destination_folder),
+            },
+            audit_params=self.audit_params({"note_path": note_path_str, "destination_folder": destination_folder}),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -362,5 +490,7 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         InboxWriteAction(policy),
         DraftPromoteAction(policy),
         ReportPromoteAction(policy),
+        NoteCreateAction(policy),
+        NoteArchiveAction(policy),
     ]
     return {action.action_id: action for action in actions}

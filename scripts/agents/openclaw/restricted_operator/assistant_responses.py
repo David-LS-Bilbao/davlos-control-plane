@@ -410,6 +410,66 @@ def render_wake_vault_context(
     return "\n" + "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Phase 8 — Full vault CRUD renders
+# ---------------------------------------------------------------------------
+
+def render_vault_sections(sections: list) -> str:
+    """E2 — list top-level vault sections."""
+    if not sections:
+        return "No encontré secciones en el vault."
+    rows = [f"- {s.name}  ({s.note_count} nota(s))" for s in sections]
+    return "Secciones del vault:\n" + "\n".join(rows)
+
+
+def render_section_notes(folder: str, notes: list[str]) -> str:
+    """E2 — list notes inside a vault section."""
+    if not notes:
+        return f"No hay notas en '{folder}'."
+    rows = [f"- {n}" for n in notes[:30]]
+    suffix = f"\n  … y {len(notes) - 30} más." if len(notes) > 30 else ""
+    return f"Notas en {folder} ({len(notes)}):\n" + "\n".join(rows) + suffix
+
+
+def render_note_content(note_name: str, rel_path: str, content: str, *, truncated: bool, total_lines: int) -> str:
+    """E1 — show a note's content with truncation notice."""
+    header = f"[{rel_path}]"
+    body = content if content.strip() else "(nota vacía)"
+    suffix = f"\n… ({total_lines} líneas en total, mostrando las primeras {total_lines if not truncated else 60})" if truncated else ""
+    return f"{header}\n{body}{suffix}"
+
+
+def render_note_ambiguous(candidates: list[tuple[str, object]], note_ref: str) -> str:
+    """E1/E4 — note ref is ambiguous across whole vault."""
+    rows = "\n".join(f"  {i + 1}. {rel}" for i, (rel, _) in enumerate(candidates[:8]))
+    return (
+        f"Hay {len(candidates)} notas que coinciden con '{note_ref}':\n"
+        f"{rows}\n"
+        "Usa la ruta completa. Ejemplo:\n"
+        f"  muéstrame {candidates[0][0]}"
+    )
+
+
+def render_note_not_found_vault(note_ref: str) -> str:
+    """E1/E4 — note not found anywhere in vault."""
+    return (
+        f"No encontré ninguna nota que coincida con '{note_ref}'.\n"
+        "Prueba:\n"
+        "- 'qué carpetas hay' para explorar el vault\n"
+        "- 'busca <texto>' para búsqueda por contenido"
+    )
+
+
+def render_note_created(note_name: str, folder: str) -> str:
+    """E3 — note created in any vault folder."""
+    return f"Nota creada.\n{folder}/{note_name}"
+
+
+def render_note_archived(note_name: str, from_path: str, to_path: str) -> str:
+    """E4 — note moved to archive."""
+    return f"Archivada.\n'{note_name}'\n{from_path} → {to_path}"
+
+
 def render_what_blocks(note_name: str, capture_status: str) -> str:
     """Explain what blocks a note from its next promotion step."""
     if capture_status == "pending_triage":

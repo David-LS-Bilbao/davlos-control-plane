@@ -92,6 +92,26 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Promueve una nota promoted_to_draft a report escribiendo REPORT_INPUT.md y marcando capture_status (requiere vault_root configurado)"
+    },
+    "action.note.create.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "note_create_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Crea una nota .md en cualquier carpeta no reservada del vault (requiere vault_root configurado)"
+    },
+    "action.note.archive.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "note_archive_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Mueve una nota al directorio 50_Archivado del vault (no destructivo)"
     }
   },
   "operator_auth": {

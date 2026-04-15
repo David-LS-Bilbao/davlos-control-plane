@@ -35,6 +35,13 @@ from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
 from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
 from obsidian_intent_resolver import ResolveResult, get_note_status, resolve_note  # noqa: E402
 from vault_artifact_reader import read_pending_artifacts  # noqa: E402
+from vault_browser import (  # noqa: E402
+    find_note_anywhere,
+    list_vault_sections,
+    list_notes_in_section,
+    read_note_content,
+    resolve_vault_section,
+)
 from vault_read_chat import (  # noqa: E402
     list_last_n as vault_list_last_n,
     search_notes as vault_search_notes,
@@ -879,6 +886,59 @@ class TelegramCommandProcessor:
                 code=result.code or "unknown",
                 target="report",
             )
+        elif pending.mutation == "note_create":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.note.create.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.create_note",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.note.create.v1",
+                params={"folder": pending.params.get("folder"), "title": pending.params.get("title")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                note_name = result.result.get("note_name", "?")
+                folder = result.result.get("folder", "?")
+                # C — save in session, B — suggest next step
+                self._save_session_note(chat_id=chat_id, user_id=user_id, note_name=note_name)
+                return (
+                    f"{assistant_responses.render_note_created(note_name, folder)}\n"
+                    f"→ Usa 'muéstrame {note_name}' para verla o 'archiva {note_name}' para archivarla."
+                )
+            return f"Error creando nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "note_archive":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.note.archive.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.archive_note",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.note.archive.v1",
+                params={"note_path": pending.params.get("note_path")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_note_archived(
+                    result.result.get("note_name", "?"),
+                    result.result.get("from_path", "?"),
+                    result.result.get("to_path", "?"),
+                )
+            return f"Error archivando nota.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1827,6 +1887,51 @@ class TelegramCommandProcessor:
         "que impide promover ",
         "que le pasa a ",
     )
+    # Phase 8 — Full vault CRUD
+    _OBS_VAULT_SECTIONS_TRIGGERS = frozenset({
+        "que carpetas hay",
+        "que secciones hay",
+        "que hay en el vault",
+        "estructura del vault",
+        "carpetas del vault",
+        "secciones del vault",
+        "que tiene el vault",
+        "ver el vault",
+        "explorar vault",
+        "carpetas",
+    })
+    _OBS_LIST_SECTION_PREFIXES: tuple[str, ...] = (
+        "que hay en ",
+        "notas en la carpeta ",
+        "contenido de la carpeta ",
+        "que hay dentro de ",
+        "ver carpeta ",
+        "ver seccion ",
+    )
+    _OBS_READ_CONTENT_PREFIXES: tuple[str, ...] = (
+        "que dice ",
+        "leeme ",
+        "lee la nota ",
+        "muestra el contenido de ",
+        "ver la nota ",
+        "muestrame el contenido de ",
+        "abre la nota ",
+        "lee ",
+    )
+    _OBS_CREATE_NOTE_PREFIXES: tuple[str, ...] = (
+        "crea una nota en ",
+        "crea nota en ",
+        "nueva nota en ",
+        "crea en ",
+        "guarda en ",
+    )
+    _OBS_ARCHIVE_PREFIXES: tuple[str, ...] = (
+        "archiva ",
+        "manda al archivo ",
+        "mueve al archivo ",
+        "mueve a archivo ",
+        "archivar ",
+    )
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
@@ -1851,6 +1956,59 @@ class TelegramCommandProcessor:
                         "action_id": "telegram.command",
                         "params": {"note_ref": ref},
                     }
+
+        # --- Phase 8 E2: vault sections ---
+        if normalized in self._OBS_VAULT_SECTIONS_TRIGGERS:
+            return {"intent": "obsidian.list_sections", "action_id": "telegram.command", "params": {}}
+
+        for prefix in self._OBS_LIST_SECTION_PREFIXES:
+            if normalized.startswith(prefix):
+                folder_ref = normalized[len(prefix):].strip()
+                if folder_ref:
+                    return {
+                        "intent": "obsidian.list_section_notes",
+                        "action_id": "telegram.command",
+                        "params": {"folder_ref": folder_ref},
+                    }
+
+        # --- Phase 8 E4: archive note (before E3 create to avoid prefix collision) ---
+        for prefix in self._OBS_ARCHIVE_PREFIXES:
+            if normalized.startswith(prefix):
+                ref = normalized[len(prefix):].strip()
+                if ref:
+                    return {
+                        "intent": "obsidian.archive_note",
+                        "action_id": "action.note.archive.v1",
+                        "params": {"note_ref": ref},
+                    }
+
+        # --- Phase 8 E3: create note in any folder ---
+        orig_lower = original_text.lower().strip()
+        for prefix in self._OBS_CREATE_NOTE_PREFIXES:
+            if orig_lower.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                # Format: <folder>: <title> :: <body>
+                if ":" in remainder and "::" in remainder:
+                    folder_part, _, rest = remainder.partition(":")
+                    folder = folder_part.strip()
+                    if "::" in rest:
+                        title, _, body = rest.partition("::")
+                        title = title.strip()
+                        body = body.strip()
+                        if folder and title and body:
+                            return {
+                                "intent": "obsidian.create_note",
+                                "action_id": "action.note.create.v1",
+                                "params": {"folder": folder, "title": title, "body": body},
+                                "mutation": "note_create",
+                                "summary": f"Crear nota '{title}' en {folder}",
+                                "reason": "telegram_obsidian_create_note",
+                            }
+                return {
+                    "intent": "obsidian.create_note_clarify",
+                    "action_id": "telegram.command",
+                    "params": {},
+                }
 
         # --- list pending (pending_triage) ---
         if normalized in self._OBS_LIST_PENDING_TRIGGERS:
@@ -1939,6 +2097,28 @@ class TelegramCommandProcessor:
         # --- Phase 5: summary today ---
         if normalized in self._OBS_SUMMARY_TODAY_TRIGGERS:
             return {"intent": "obsidian.summary_today", "action_id": "telegram.command", "params": {}}
+
+        # --- Phase 8 E1: read note content (after Phase 5 to avoid "muestrame las ultimas" conflict) ---
+        for prefix in self._OBS_READ_CONTENT_PREFIXES:
+            if normalized.startswith(prefix):
+                ref = normalized[len(prefix):].strip()
+                if len(ref) >= 2:
+                    return {
+                        "intent": "obsidian.read_content",
+                        "action_id": "telegram.command",
+                        "params": {"note_ref": ref},
+                    }
+
+        # --- Phase 8 E1: "muestrame <ref>" — only if not caught by last_n above ---
+        if normalized.startswith("muestrame "):
+            ref = normalized[len("muestrame "):].strip()
+            # Avoid catching "muestrame las ultimas" (already routed in last_n block)
+            if ref and not ref.startswith("las ultimas") and not ref.startswith("ultimas"):
+                return {
+                    "intent": "obsidian.read_content",
+                    "action_id": "telegram.command",
+                    "params": {"note_ref": ref},
+                }
 
         return None
 
@@ -2133,6 +2313,70 @@ class TelegramCommandProcessor:
             return self._response(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 action_id="telegram.command", mode=mode, intent=sub, text=text,
+            )
+
+        # --- Phase 8 E2: vault sections ---
+        if sub == "obsidian.list_sections":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_sections(operator_id=operator_id),
+            )
+
+        if sub == "obsidian.list_section_notes":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_section_notes(
+                    operator_id=operator_id, folder_ref=intent["params"]["folder_ref"]
+                ),
+            )
+
+        # --- Phase 8 E1: read note content ---
+        if sub == "obsidian.read_content":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_read_content(
+                    operator_id=operator_id, note_ref=resolved_ref,
+                    chat_id=chat_id, user_id=user_id,
+                ),
+            )
+
+        # --- Phase 8 E3: create note (mutation) ---
+        if sub == "obsidian.create_note":
+            return self._obsidian_create_note(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                folder=intent["params"]["folder"],
+                title=intent["params"]["title"],
+                body=intent["params"]["body"],
+                mode=mode,
+            )
+
+        if sub == "obsidian.create_note_clarify":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=(
+                    "Formato para crear una nota:\n"
+                    "  crea una nota en <carpeta>: <título> :: <contenido>\n"
+                    "Ejemplo:\n"
+                    "  crea una nota en 10_Proyectos: Mi plan :: Detalles del plan aquí\n"
+                    "Carpetas disponibles: usa 'qué carpetas hay' para ver opciones."
+                ),
+            )
+
+        # --- Phase 8 E4: archive note (mutation) ---
+        if sub == "obsidian.archive_note":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
+            return self._obsidian_archive_note(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                note_ref=resolved_ref, mode=mode,
             )
 
         # Unknown obsidian sub-intent — fall back to help
@@ -2455,6 +2699,187 @@ class TelegramCommandProcessor:
         return assistant_responses.render_what_blocks(
             note_name=resolved.note_name,
             capture_status=resolved.capture_status,
+        )
+
+    # -----------------------------------------------------------------------
+    # Phase 8 — Full vault CRUD handlers
+    # -----------------------------------------------------------------------
+
+    def _obsidian_list_sections(self, *, operator_id: str) -> str:
+        """E2 — list top-level vault sections."""
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            sections = list_vault_sections(vault_root)
+        except Exception as exc:
+            return f"Error listando secciones: {exc}"
+        return assistant_responses.render_vault_sections(sections)
+
+    def _obsidian_list_section_notes(self, *, operator_id: str, folder_ref: str) -> str:
+        """E2 — list notes in a vault section (fuzzy folder resolution)."""
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            folder = resolve_vault_section(vault_root, folder_ref)
+        except Exception as exc:
+            return f"Error buscando carpeta: {exc}"
+        if folder is None:
+            return (
+                f"No encontré la carpeta '{folder_ref}' en el vault.\n"
+                "Usa 'qué carpetas hay' para ver las secciones disponibles."
+            )
+        try:
+            notes = list_notes_in_section(vault_root, folder)
+        except Exception as exc:
+            return f"Error listando notas: {exc}"
+        return assistant_responses.render_section_notes(folder, notes)
+
+    def _obsidian_read_content(
+        self, *, operator_id: str, note_ref: str, chat_id: str, user_id: str
+    ) -> str:
+        """E1 — read a note's content from anywhere in the vault."""
+        err = self._vault_read_check(operator_id)
+        if err:
+            return err
+        vault_root = self.policy.vault_inbox.vault_root
+        try:
+            candidates = find_note_anywhere(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error buscando nota: {exc}"
+        if not candidates:
+            return assistant_responses.render_note_not_found_vault(note_ref)
+        if len(candidates) > 1:
+            return assistant_responses.render_note_ambiguous(candidates, note_ref)
+        rel_path, _ = candidates[0]
+        # C — save session note
+        self._save_session_note(chat_id=chat_id, user_id=user_id, note_name=rel_path)
+        try:
+            note = read_note_content(vault_root, rel_path)
+        except Exception as exc:
+            return f"Error leyendo nota: {exc}"
+        if note is None:
+            return assistant_responses.render_note_not_found_vault(note_ref)
+        return assistant_responses.render_note_content(
+            note.note_name, note.rel_path, note.content,
+            truncated=note.truncated, total_lines=note.total_lines,
+        )
+
+    def _obsidian_create_note(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        folder: str,
+        title: str,
+        body: str,
+        mode: str,
+    ) -> str:
+        """E3 — create a note in any non-reserved vault folder."""
+        operator = self._authorize_operator(
+            operator_id=operator_id, permission="operator.write",
+            command="obsidian.create_note", chat_id=chat_id, user_id=user_id,
+            action_id="action.note.create.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para crear notas."
+        effective = self.policy.get_effective_action_state("action.note.create.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            return f"La acción note.create no está habilitada (status={status})."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        # Fuzzy-resolve folder
+        try:
+            resolved_folder = resolve_vault_section(vault_root, folder) or folder
+        except Exception:
+            resolved_folder = folder
+        body_bytes = len(body.encode("utf-8"))
+        summary = f"note.create | folder={resolved_folder} | title={title} | body={body_bytes} B"
+        params = {"folder": resolved_folder, "title": title, "body": body}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="note_create",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="note_create",
+            action_id="action.note.create.v1",
+            params=params,
+            reason="telegram_obsidian_create_note",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.create_note",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.note.create.v1",
+            params={"intent": "note_create", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.note.create.v1", mode=mode, intent="note_create",
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_archive_note(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        note_ref: str,
+        mode: str,
+    ) -> str:
+        """E4 — archive (move) a note to 50_Archivado."""
+        operator = self._authorize_operator(
+            operator_id=operator_id, permission="operator.write",
+            command="obsidian.archive_note", chat_id=chat_id, user_id=user_id,
+            action_id="action.note.archive.v1",
+        )
+        if operator is None:
+            return "Operador no autorizado para archivar notas."
+        effective = self.policy.get_effective_action_state("action.note.archive.v1")
+        if effective is None or not effective.effective_allowed:
+            status = effective.status if effective is not None else "unknown"
+            return f"La acción note.archive no está habilitada (status={status})."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            candidates = find_note_anywhere(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error buscando nota: {exc}"
+        if not candidates:
+            return assistant_responses.render_note_not_found_vault(note_ref)
+        if len(candidates) > 1:
+            return assistant_responses.render_note_ambiguous(candidates, note_ref)
+        rel_path, _ = candidates[0]
+        note_name = Path(rel_path).name
+        summary = f"note.archive | nota={note_name} → 50_Archivado"
+        params = {"note_path": rel_path, "destination_folder": "50_Archivado"}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="note_archive",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="note_archive",
+            action_id="action.note.archive.v1",
+            params=params,
+            reason="telegram_obsidian_archive_note",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.archive_note",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.note.archive.v1",
+            params={"intent": "note_archive", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.note.archive.v1", mode=mode, intent="note_archive",
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
         )
 
     @staticmethod
