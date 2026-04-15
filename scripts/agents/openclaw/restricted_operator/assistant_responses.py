@@ -13,14 +13,18 @@ def render_conversation_help() -> str:
     return (
         "No entendí la intención o no está soportada.\n"
         "Prueba una de estas frases:\n"
+        "Sistema:\n"
         "- estado general\n"
         "- capacidades activas\n"
         "- auditoría reciente\n"
         "- logs openclaw 20\n"
-        "- habilita action.dropzone.write.v1\n"
-        "- deshabilita action.dropzone.write.v1\n"
-        "- habilita action.dropzone.write.v1 por 15 minutos\n"
-        "- resetea one-shot action.webhook.trigger.v1\n"
+        "- habilita / deshabilita action.<id>.v1\n"
+        "Obsidian:\n"
+        "- qué tengo pendiente\n"
+        "- estado de la ultima\n"
+        "- qué artefactos pendientes hay\n"
+        "- qué bloquea la ultima\n"
+        "- ayuda obsidian\n"
         "Si quieres hablar de forma más natural, usa /wake."
     )
 
@@ -28,13 +32,25 @@ def render_conversation_help() -> str:
 def render_help(operator_id: str) -> str:
     return (
         f"operator={operator_id}\n"
-        "/wake\n"
-        "/sleep\n"
-        "/status\n"
-        "/capabilities\n"
-        "/audit_tail\n"
+        "\n"
+        "Slash commands:\n"
+        "/wake  /sleep  /status  /capabilities  /audit_tail\n"
+        "/draft_promote [note=<nombre>]\n"
+        "/report_promote [note=<nombre>]\n"
         "/execute <action_id> [k=v ...]\n"
-        "Conversacional: estado general | capacidades activas | auditoría reciente | logs openclaw 20"
+        "\n"
+        "Conversacional (sin /wake):\n"
+        "- estado general | capacidades activas | auditoría reciente\n"
+        "- qué tengo pendiente | qué está listo para report\n"
+        "- estado de <nota o ref> | qué bloquea la ultima\n"
+        "- qué artefactos pendientes hay\n"
+        "- ayuda obsidian\n"
+        "\n"
+        "Modo asistente (/wake):\n"
+        "- guarda esta idea: <título> :: <cuerpo>\n"
+        "- promueve <ref> a draft | promueve <ref> a report\n"
+        "- busca <texto> | muéstrame las últimas 5 notas\n"
+        "- resúmeme lo guardado hoy"
     )
 
 
@@ -133,4 +149,289 @@ def render_assistant_fallback() -> str:
         "- qué propones\n"
         "- habilita/deshabilita una capacidad concreta\n"
         "Para salir del modo asistente usa /sleep."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Obsidian conversational layer renders
+# ---------------------------------------------------------------------------
+
+def render_obsidian_list(notes: list[dict], caption: str) -> str:
+    if not notes:
+        return f"No hay notas en estado {caption}."
+    rows = [f"- {n['note_name']}  run_id={n['run_id']}  {n.get('created_at_utc', '?')}" for n in notes]
+    return f"Notas {caption}:\n" + "\n".join(rows)
+
+
+def render_obsidian_note_status(info: dict) -> str:
+    return (
+        f"nota: {info['note_name']}\n"
+        f"run_id: {info['run_id']}\n"
+        f"estado: {info['capture_status']}\n"
+        f"creada: {info.get('created_at_utc', '?')}"
+    )
+
+
+def render_obsidian_note_status_v2(info: dict) -> str:
+    """Phase 6 improved status: includes source_dir and created_at_utc."""
+    lines = [
+        f"nota: {info['note_name']}",
+        f"run_id: {info.get('run_id', '?')}",
+        f"estado: {info.get('capture_status', '?')}",
+        f"creada: {info.get('created_at_utc', '?')}",
+    ]
+    if info.get("source_dir"):
+        lines.append(f"directorio: {info['source_dir']}")
+    return "\n".join(lines)
+
+
+def render_obsidian_ambiguous(candidates: tuple[str, ...], action: str) -> str:
+    """Phase 6 improved: numbered list + concrete repeat example."""
+    if not candidates:
+        return f"Referencia ambigua para {action}. Usa un nombre más específico."
+    rows = "\n".join(f"  {i + 1}. {c}" for i, c in enumerate(candidates))
+    first = candidates[0]
+    return (
+        f"Hay {len(candidates)} notas que coinciden. Sé más específico para {action}:\n"
+        f"{rows}\n"
+        f"Repite usando el nombre exacto del archivo. Ejemplo:\n"
+        f"  estado de {first}"
+    )
+
+
+def render_obsidian_vault_not_configured() -> str:
+    return "vault_inbox.vault_root no está configurado en la policy."
+
+
+def render_obsidian_capture_clarify() -> str:
+    return (
+        "Para capturar una nota conversacionalmente usa el formato:\n"
+        "  guarda esta idea: <título> :: <cuerpo>\n"
+        "Ejemplo:\n"
+        "  guarda esta idea: Plan de hoy :: Revisar costes del proyecto\n"
+        "O usa el slash command: /inbox_write run_id=<id> title=<título> :: <cuerpo>"
+    )
+
+
+def render_obsidian_conversation_help() -> str:
+    return (
+        "Intenciones Obsidian disponibles:\n"
+        "\n"
+        "Lectura:\n"
+        "- qué tengo pendiente\n"
+        "- qué está listo para report\n"
+        "- estado de <nota o run_id>\n"
+        "- qué bloquea la ultima\n"
+        "- qué artefactos pendientes hay\n"
+        "- muéstrame las últimas 5 notas\n"
+        "- busca <texto>\n"
+        "- resúmeme lo guardado hoy\n"
+        "\n"
+        "Escritura (con confirmación):\n"
+        "- guarda esta idea: <título> :: <cuerpo>\n"
+        "- promueve <ref> a draft\n"
+        "- promueve <ref> a report\n"
+        "- promueve la ultima a draft\n"
+        "\n"
+        "Ayuda: 'ayuda obsidian'\n"
+        "Slash commands: /draft_promote, /report_promote, /inbox_write."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Vault Read Chat renders
+# ---------------------------------------------------------------------------
+
+def render_vault_last_n(notes: list, n: int) -> str:
+    """Render a list of recent notes."""
+    if not notes:
+        return "No hay notas recientes en el vault."
+    rows = []
+    for info in notes:
+        label = info.source_dir.split("/")[-1]
+        rows.append(f"- [{label}] {info.note_name}  estado={info.capture_status}")
+        if info.title and info.title != info.note_name:
+            rows.append(f"  título: {info.title[:60]}")
+    return f"Últimas {len(notes)} nota(s):\n" + "\n".join(rows)
+
+
+def render_vault_search(notes: list, query: str) -> str:
+    """Render text search results."""
+    if not notes:
+        return f"No encontré notas con '{query}'."
+    rows = []
+    for info in notes:
+        label = info.source_dir.split("/")[-1]
+        rows.append(f"- [{label}] {info.note_name}")
+        if info.title:
+            rows.append(f"  título: {info.title[:60]}")
+        if info.excerpt:
+            rows.append(f"  …{info.excerpt[:80]}…")
+    return f"Resultados para '{query}' ({len(notes)} nota(s)):\n" + "\n".join(rows)
+
+
+def render_vault_summary_today(notes: list, today: str) -> str:
+    """Render today's notes summary."""
+    if not notes:
+        return f"No hay notas guardadas hoy ({today})."
+    rows = []
+    for info in notes:
+        rows.append(f"- {info.title[:50]}  estado={info.capture_status}")
+    return f"Guardado hoy {today} — {len(notes)} nota(s):\n" + "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Operational Hygiene and Conversational UX renders
+# ---------------------------------------------------------------------------
+
+def render_error_staging_conflict(note_name: str) -> str:
+    """Conversational error for staging_conflict code."""
+    return (
+        f"No puedo promover '{note_name}' a draft: ya hay un STAGED_INPUT.md pendiente.\n"
+        "El pipeline anterior aún no ha procesado ese artefacto.\n"
+        "Opciones:\n"
+        "- Espera a que el pipeline consuma STAGED_INPUT.md.\n"
+        "- Usa 'qué artefactos pendientes hay' para ver qué hay en cola."
+    )
+
+
+def render_error_report_conflict(note_name: str) -> str:
+    """Conversational error for report_conflict code."""
+    return (
+        f"No puedo promover '{note_name}' a report: ya hay un REPORT_INPUT.md pendiente.\n"
+        "El pipeline anterior aún no ha procesado ese artefacto.\n"
+        "Opciones:\n"
+        "- Espera a que el pipeline consuma REPORT_INPUT.md.\n"
+        "- Usa 'qué artefactos pendientes hay' para ver qué hay en cola."
+    )
+
+
+def render_error_not_promotable(note_name: str) -> str:
+    """Conversational error for not_promotable code."""
+    return (
+        f"No puedo promover '{note_name}' a draft.\n"
+        "La nota no está en estado pending_triage.\n"
+        "Pistas:\n"
+        "- Si ya fue promovida a draft, usa 'promueve a report' o /report_promote.\n"
+        "- Usa 'estado de <nota>' para ver su estado actual."
+    )
+
+
+def render_error_not_reportable(note_name: str) -> str:
+    """Conversational error for not_reportable code."""
+    return (
+        f"No puedo promover '{note_name}' a report.\n"
+        "La nota no está en estado promoted_to_draft.\n"
+        "Pistas:\n"
+        "- Si está en pending_triage, primero promuévela a draft.\n"
+        "- Usa 'estado de <nota>' para ver su estado actual."
+    )
+
+
+def render_error_note_not_found(note_ref: str) -> str:
+    """Conversational error when a note reference resolves to nothing."""
+    return (
+        f"No encontré ninguna nota que coincida con '{note_ref}' en el inbox.\n"
+        "Prueba:\n"
+        "- 'qué tengo pendiente' para ver las notas disponibles\n"
+        "- Usa el nombre de archivo exacto con /draft_promote note=<nombre>"
+    )
+
+
+def render_obsidian_help() -> str:
+    """Full capability list for Obsidian/vault conversational UX."""
+    return (
+        "Esto es lo que puedo hacer con Obsidian/vault:\n"
+        "\n"
+        "Lectura del vault (sin mutaciones):\n"
+        "- 'qué tengo pendiente' — notas en pending_triage\n"
+        "- 'qué está listo para report' — notas en promoted_to_draft\n"
+        "- 'estado de <nota o ref>' — estado de una nota concreta\n"
+        "- 'muéstrame las últimas 5 notas' — notas recientes\n"
+        "- 'busca <texto>' — búsqueda por texto\n"
+        "- 'resúmeme lo guardado hoy' — notas del día\n"
+        "- 'qué artefactos pendientes hay' — STAGED/REPORT_INPUT.md en cola\n"
+        "- 'qué bloquea la ultima' — por qué no se puede promover la última nota\n"
+        "\n"
+        "Escritura (requieren confirmación explícita):\n"
+        "- 'guarda esta idea: <título> :: <cuerpo>' — nueva nota al inbox\n"
+        "- 'promueve <ref> a draft' — promover a draft\n"
+        "- 'promueve <ref> a report' — promover a report\n"
+        "\n"
+        "Slash commands equivalentes: /inbox_write /draft_promote /report_promote"
+    )
+
+
+def render_pending_artifacts(
+    *,
+    staged_exists: bool,
+    report_exists: bool,
+    staged_note_name: str = "",
+    report_note_name: str = "",
+) -> str:
+    """Show pipeline artifact presence without revealing file content."""
+    lines = ["Artefactos de pipeline en vault (solo lectura):"]
+    if staged_exists:
+        detail = f" (fuente: {staged_note_name})" if staged_note_name else ""
+        lines.append(f"- STAGED_INPUT.md: PRESENTE{detail}")
+        lines.append("  El pipeline de draft aún no ha consumido este artefacto.")
+    else:
+        lines.append("- STAGED_INPUT.md: no hay artefacto pendiente")
+    if report_exists:
+        detail = f" (fuente: {report_note_name})" if report_note_name else ""
+        lines.append(f"- REPORT_INPUT.md: PRESENTE{detail}")
+        lines.append("  El pipeline de report aún no ha consumido este artefacto.")
+    else:
+        lines.append("- REPORT_INPUT.md: no hay artefacto pendiente")
+    if not staged_exists and not report_exists:
+        lines.append("No hay artefactos bloqueando el pipeline.")
+    return "\n".join(lines)
+
+
+def render_wake_vault_context(
+    *,
+    pending_count: int | None,
+    staged_exists: bool | None,
+    report_exists: bool | None,
+    last_event: str | None,
+) -> str:
+    """Concise vault summary appended to the /wake message."""
+    lines = ["Vault:"]
+    if pending_count is not None:
+        lines.append(f"- pending_triage: {pending_count} nota(s)")
+    if staged_exists is not None:
+        staged = "PRESENTE" if staged_exists else "libre"
+        report = "PRESENTE" if report_exists else "libre"
+        lines.append(f"- STAGED_INPUT.md: {staged}  REPORT_INPUT.md: {report}")
+    if last_event:
+        lines.append(f"- último evento: {last_event}")
+    if len(lines) == 1:
+        return ""
+    return "\n" + "\n".join(lines)
+
+
+def render_what_blocks(note_name: str, capture_status: str) -> str:
+    """Explain what blocks a note from its next promotion step."""
+    if capture_status == "pending_triage":
+        return (
+            f"La nota '{note_name}' está en pending_triage.\n"
+            "Puede promoverse a draft sin bloqueo de estado.\n"
+            "Verifica también que no haya STAGED_INPUT.md en cola:\n"
+            "  'qué artefactos pendientes hay'"
+        )
+    if capture_status == "promoted_to_draft":
+        return (
+            f"La nota '{note_name}' ya está en promoted_to_draft.\n"
+            "Puede promoverse a report.\n"
+            "Verifica que no haya REPORT_INPUT.md en cola:\n"
+            "  'qué artefactos pendientes hay'"
+        )
+    if capture_status == "promoted_to_report":
+        return (
+            f"La nota '{note_name}' ya está en promoted_to_report.\n"
+            "No admite más promociones desde este sistema."
+        )
+    return (
+        f"La nota '{note_name}' tiene estado '{capture_status}'.\n"
+        "No reconozco ese estado como parte del flujo estándar de este sistema."
     )

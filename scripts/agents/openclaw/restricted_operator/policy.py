@@ -1,8 +1,22 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Per-file write locks so concurrent PolicyStore instances sharing the same
+# state_store_path serialise their read-merge-write cycles.
+_state_write_locks: dict[str, threading.Lock] = {}
+_state_write_locks_mutex = threading.Lock()
+
+
+def _get_state_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _state_write_locks_mutex:
+        if key not in _state_write_locks:
+            _state_write_locks[key] = threading.Lock()
+        return _state_write_locks[key]
 
 from models import (
     ActionPolicy,
@@ -14,6 +28,7 @@ from models import (
     OperatorRecord,
     TelegramConfig,
     TelegramPrincipalRecord,
+    VaultInboxConfig,
     WebhookTargetConfig,
 )
 
@@ -63,6 +78,7 @@ class PolicyStore:
         self.health_checks = self._load_health_checks(self.raw.get("health_checks", {}))
         self.operator_auth = self._load_operator_auth(self.raw.get("operator_auth", {}))
         self.telegram = self._load_telegram(self.raw.get("telegram", {}))
+        self.vault_inbox = self._load_vault_inbox(self.raw.get("vault_inbox", {}))
         self.state_store_path = Path(self.broker.state_store_path)
         self.runtime_state = self._load_runtime_state(self.state_store_path)
 
@@ -251,6 +267,18 @@ class PolicyStore:
                 payload.get("allowed_users", {}),
                 "telegram.allowed_users",
             ),
+            assistant_idle_timeout_seconds=max(
+                60,
+                int(payload.get("assistant_idle_timeout_seconds", 300)),
+            ),
+        )
+
+    @staticmethod
+    def _load_vault_inbox(payload: dict) -> VaultInboxConfig:
+        if not isinstance(payload, dict):
+            raise PolicyError("vault_inbox must be an object")
+        return VaultInboxConfig(
+            vault_root=str(payload.get("vault_root", "")),
         )
 
     @staticmethod
@@ -281,6 +309,8 @@ class PolicyStore:
         if declared is None:
             return None
         now = now or datetime.now(timezone.utc)
+        # Always re-read from disk so long-lived instances see external mutations.
+        self.runtime_state = self._load_runtime_state(self.state_store_path)
         override = self.runtime_state.get(action_id, {})
         enabled = bool(override.get("enabled", declared.enabled))
         mode = str(override.get("mode", declared.mode))
@@ -471,6 +501,20 @@ class PolicyStore:
         self._persist_runtime_state()
 
     def _persist_runtime_state(self) -> None:
-        self.state_store_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"actions": self.runtime_state}
-        self.state_store_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        """Write runtime state to disk atomically, merging with any concurrent writes.
+
+        Uses a per-file threading.Lock so that two PolicyStore instances pointing
+        at the same state_store_path do not lose each other's updates (last-write
+        does a read-merge-write rather than a blind overwrite).
+        """
+        lock = _get_state_lock(self.state_store_path)
+        with lock:
+            self.state_store_path.parent.mkdir(parents=True, exist_ok=True)
+            # Read whatever is on disk right now, then overlay our pending changes.
+            on_disk = self._load_runtime_state(self.state_store_path)
+            on_disk.update(self.runtime_state)
+            self.runtime_state = on_disk
+            payload = {"actions": on_disk}
+            self.state_store_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            )
