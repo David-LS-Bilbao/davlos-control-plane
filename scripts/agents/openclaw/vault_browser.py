@@ -141,6 +141,86 @@ def read_note_content(
     )
 
 
+def search_vault_broad(
+    vault_root: str,
+    query: str,
+    *,
+    max_results: int = 6,
+    excerpt_chars: int = 120,
+) -> list[tuple[str, str]]:
+    """Search all .md files across vault for query in filename or content.
+
+    Returns list of (rel_path, excerpt) tuples.
+    Excludes Agent/, .obsidian/, .git/.
+    """
+    root = Path(vault_root).resolve()
+    if not root.is_dir() or not query.strip():
+        return []
+    q = query.lower().strip()
+    matches: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for md_file in sorted(root.rglob("*.md")):
+        # skip reserved dirs
+        try:
+            parts = md_file.relative_to(root).parts
+        except ValueError:
+            continue
+        if parts and parts[0] in _EXCLUDED_DIRS:
+            continue
+        try:
+            rel = str(md_file.relative_to(root))
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        # match in filename first (cheap)
+        if q in md_file.name.lower():
+            excerpt = _first_excerpt(md_file, excerpt_chars)
+            matches.append((rel, excerpt))
+            seen.add(rel)
+            if len(matches) >= max_results:
+                break
+            continue
+        # match in content (more expensive)
+        try:
+            content = md_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if q in content.lower():
+            excerpt = _first_excerpt(md_file, excerpt_chars, content=content)
+            matches.append((rel, excerpt))
+            seen.add(rel)
+            if len(matches) >= max_results:
+                break
+    return matches
+
+
+def _first_excerpt(path: Path, chars: int, *, content: str | None = None) -> str:
+    """Return first non-frontmatter, non-heading lines as a short excerpt."""
+    try:
+        raw = content if content is not None else path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    in_frontmatter = False
+    fragments: list[str] = []
+    total = 0
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter:
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        fragments.append(stripped)
+        total += len(stripped)
+        if total >= chars:
+            break
+    excerpt = " ".join(fragments)
+    return excerpt[:chars] + ("…" if len(excerpt) > chars else "")
+
+
 def _normalize_name(text: str) -> str:
     """Lower, strip digits-prefix, remove separators for fuzzy matching."""
     t = text.lower().strip()

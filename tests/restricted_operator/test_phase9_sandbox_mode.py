@@ -401,6 +401,6 @@ class TestSandboxRenders(unittest.TestCase):
     def test_sandbox_vault_summary_no_vault_root_returns_empty(self):
         tmp = tempfile.TemporaryDirectory()
         proc = _make_proc(str(_make_policy(Path(tmp.name), vault_root="")))
-        result = proc._build_sandbox_vault_summary(operator_id="test-operator")
+        result = proc._build_sandbox_vault_context(operator_id="test-operator", message="test")
         self.assertEqual(result, "")
         tmp.cleanup()

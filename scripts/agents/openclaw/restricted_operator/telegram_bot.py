@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -42,6 +43,7 @@ from vault_browser import (  # noqa: E402
     list_notes_in_section,
     read_note_content,
     resolve_vault_section,
+    search_vault_broad,
 )
 from vault_read_chat import (  # noqa: E402
     list_last_n as vault_list_last_n,
@@ -3600,7 +3602,7 @@ class TelegramCommandProcessor:
         self, *, chat_id: str, user_id: str, operator_id: str, text: str
     ) -> str:
         key = self._pending_key(chat_id=chat_id, user_id=user_id)
-        vault_summary = self._build_sandbox_vault_summary(operator_id=operator_id)
+        vault_summary = self._build_sandbox_vault_context(operator_id=operator_id, message=text)
         try:
             response_text, action = self._sandbox_agent.chat(
                 key=key, message=text, vault_summary=vault_summary
@@ -3666,21 +3668,60 @@ class TelegramCommandProcessor:
             code=result.code or "unknown",
         )
 
-    def _build_sandbox_vault_summary(self, *, operator_id: str) -> str:
-        """Build a compact vault state summary for the LLM system prompt. Soft failures."""
+    # Spanish stopwords filtered out before keyword search
+    _SANDBOX_STOP_WORDS: frozenset[str] = frozenset({
+        "que", "qué", "hay", "en", "de", "la", "el", "los", "las", "un", "una",
+        "unos", "unas", "tengo", "sobre", "como", "con", "para", "por", "si",
+        "no", "me", "te", "se", "es", "son", "está", "están", "y", "o", "a",
+        "al", "del", "mi", "mis", "tu", "tus", "su", "sus", "le", "les",
+        "muestrame", "dime", "dame", "quiero", "puedes", "puede", "cuéntame",
+        "cuentame", "hablame", "háblame", "busca", "busco", "ver", "veo",
+        "muestra", "lista", "listar", "hay", "tiene", "tengo", "tienes",
+    })
+
+    def _extract_sandbox_keywords(self, message: str) -> list[str]:
+        """Extract meaningful keywords from a user message for vault search."""
+        # Strip accents for stopword matching
+        normalized = unicodedata.normalize("NFKD", message.lower())
+        normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+        words = re.findall(r"[a-z0-9_\-]{3,}", normalized)
+        seen: set[str] = set()
+        result: list[str] = []
+        for w in words:
+            if w not in self._SANDBOX_STOP_WORDS and w not in seen:
+                seen.add(w)
+                result.append(w)
+        return result[:4]  # max 4 keywords
+
+    def _build_sandbox_vault_context(self, *, operator_id: str, message: str) -> str:
+        """Build rich vault context for the LLM: sections with note names + relevant notes.
+
+        Called on every sandbox message. Soft failures silently omit fields.
+        """
         if not self._can_operator(operator_id, "operator.read"):
             return ""
         vault_root = self.policy.vault_inbox.vault_root
         if not vault_root:
             return ""
         lines: list[str] = []
+
+        # 1. All sections with their note names (real-time)
         try:
             sections = list_vault_sections(vault_root)
             if sections:
-                parts = ", ".join(f"{s.name} ({s.note_count})" for s in sections[:8])
-                lines.append(f"Secciones: {parts}")
+                lines.append("Secciones del vault:")
+                for s in sections:
+                    if s.note_count == 0:
+                        lines.append(f"  {s.name}: (vacía)")
+                    else:
+                        notes = list_notes_in_section(vault_root, s.rel_path)
+                        note_list = ", ".join(notes[:12])
+                        suffix = f" (+{s.note_count - 12} más)" if s.note_count > 12 else ""
+                        lines.append(f"  {s.name}: {note_list}{suffix}")
         except Exception:
             pass
+
+        # 2. Pipeline state
         try:
             pending = list_promotable_notes(vault_root=vault_root, max_results=50)
             lines.append(f"Pendientes de triage: {len(pending)}")
@@ -3700,6 +3741,26 @@ class TelegramCommandProcessor:
                 lines.append("REPORT_INPUT.md: presente")
         except Exception:
             pass
+
+        # 3. Keyword-relevant notes from the current message
+        keywords = self._extract_sandbox_keywords(message)
+        if keywords:
+            relevant: list[tuple[str, str]] = []
+            seen_paths: set[str] = set()
+            for kw in keywords:
+                try:
+                    results = search_vault_broad(vault_root, kw, max_results=4)
+                    for rel_path, excerpt in results:
+                        if rel_path not in seen_paths:
+                            seen_paths.add(rel_path)
+                            relevant.append((rel_path, excerpt))
+                except Exception:
+                    pass
+            if relevant:
+                lines.append(f"\nNotas relevantes para '{' '.join(keywords[:2])}':")
+                for rel_path, excerpt in relevant[:6]:
+                    lines.append(f"  - {rel_path}" + (f": {excerpt}" if excerpt else ""))
+
         return "\n".join(lines)
 
 
