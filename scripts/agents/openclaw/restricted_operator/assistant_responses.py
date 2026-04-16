@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from models import EffectiveActionState
 
 
@@ -495,3 +497,28 @@ def render_what_blocks(note_name: str, capture_status: str) -> str:
         f"La nota '{note_name}' tiene estado '{capture_status}'.\n"
         "No reconozco ese estado como parte del flujo estándar de este sistema."
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Sandbox mode renders
+# ---------------------------------------------------------------------------
+
+def render_sandbox_activated() -> str:
+    return (
+        "[SANDBOX] Modo libre activado.\n"
+        "Tengo acceso completo al vault. Puedo leer, crear, archivar y gestionar notas.\n"
+        "Todas las acciones quedan registradas en el audit log.\n"
+        "Para salir: 'sal del sandbox' o 'modo normal'."
+    )
+
+
+def render_sandbox_deactivated() -> str:
+    return "Modo libre desactivado. Volviendo al modo normal."
+
+
+def render_sandbox_action_result(*, action_id: str, result: dict) -> str:
+    return f"Acción ejecutada: {action_id}\n{json.dumps(result, ensure_ascii=False, indent=2)}"
+
+
+def render_sandbox_action_error(*, action_id: str, error: str, code: str) -> str:
+    return f"Error ejecutando {action_id}.\ncode={code}\nerror={error}"

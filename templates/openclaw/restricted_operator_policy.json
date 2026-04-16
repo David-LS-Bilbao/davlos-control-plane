@@ -186,6 +186,13 @@
       }
     }
   },
+  "sandbox_mode": {
+    "inference_url": "http://127.0.0.1:11440/v1/chat/completions",
+    "model": "qwen2.5:3b",
+    "max_history_turns": 6,
+    "timeout_seconds": 30,
+    "_comment": "Local Ollama inference gateway used in sandbox (modo libre) sessions"
+  },
   "health_checks": {
     "openclaw_ui": {
       "url": "http://127.0.0.1:18789/",

@@ -31,6 +31,7 @@ from policy import PolicyError, PolicyStore
 _DRAFT_BRIDGE_DIR = Path(__file__).resolve().parent.parent
 if str(_DRAFT_BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(_DRAFT_BRIDGE_DIR))
+from llm_agent import SandboxLLMAgent, SandboxLLMAgentError  # noqa: E402
 from vault_draft_promote_bridge import list_promotable_notes  # noqa: E402
 from vault_report_promote_bridge import list_reportable_notes  # noqa: E402
 from obsidian_intent_resolver import ResolveResult, get_note_status, resolve_note  # noqa: E402
@@ -174,6 +175,9 @@ class TelegramCommandProcessor:
         self.pending_confirmations: dict[str, PendingConfirmation] = {}
         # C — session note memory: last resolved note per chat:user pair
         self._session_last_note: dict[str, str] = {}
+        # Phase 9 — sandbox mode flag and LLM agent (per chat:user)
+        self._sandbox_mode: dict[str, bool] = {}
+        self._sandbox_agent = SandboxLLMAgent()
         self.session_store = AssistantSessionStore()
         self.assistant_sessions = self.session_store.sessions
         # Policy value is the base; env var overrides if explicitly set.
@@ -359,6 +363,15 @@ class TelegramCommandProcessor:
 
     def _handle_conversation(self, *, chat_id: str, user_id: str, operator_id: str, text: str) -> str:
         normalized = self._normalize_text(text)
+        # Phase 9 — sandbox mode (checked before wake/sleep so deactivation always works)
+        if normalized in self._SANDBOX_DEACTIVATE_TRIGGERS:
+            return self._sandbox_deactivate(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if normalized in self._SANDBOX_ACTIVATE_TRIGGERS:
+            return self._sandbox_activate(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
+        if self._sandbox_mode.get(self._pending_key(chat_id=chat_id, user_id=user_id)):
+            return self._handle_sandbox_message(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id, text=text
+            )
         if normalized in {"wake", "despierta", "despierta openclaw", "modo asistente"}:
             return self._wake_assistant(chat_id=chat_id, user_id=user_id, operator_id=operator_id)
         if normalized in {"sleep", "duerme", "duermete", "sal del modo asistente"}:
@@ -1156,6 +1169,17 @@ class TelegramCommandProcessor:
     @staticmethod
     def _pending_key(*, chat_id: str, user_id: str) -> str:
         return f"{chat_id}:{user_id}"
+
+    # Phase 9 — sandbox mode triggers
+    _SANDBOX_ACTIVATE_TRIGGERS: frozenset[str] = frozenset({
+        "activa modo libre", "libera openclaw", "modo libre",
+        "sandbox on", "activa sandbox", "modo sandbox",
+    })
+    _SANDBOX_DEACTIVATE_TRIGGERS: frozenset[str] = frozenset({
+        "sal del modo libre", "desactiva modo libre", "modo normal",
+        "sandbox off", "cierra sandbox", "sal del sandbox",
+        "vuelve al modo normal",
+    })
 
     # C — note alias helpers
     _NOTE_ALIASES: frozenset[str] = frozenset({"esa", "la misma", "esa nota", "misma nota"})
@@ -3104,6 +3128,9 @@ class TelegramCommandProcessor:
         self.pending_confirmations.pop(key, None)
         # C — clear session note memory on sleep
         self._session_last_note.pop(key, None)
+        # Phase 9 — also exit sandbox on explicit sleep
+        self._sandbox_mode.pop(key, None)
+        self._sandbox_agent.clear_history(key)
         if existed is not None:
             self._audit_channel_event(
                 event="assistant_sleep",
@@ -3305,6 +3332,143 @@ class TelegramCommandProcessor:
     @staticmethod
     def _render_assistant_fallback() -> str:
         return assistant_responses.render_assistant_fallback()
+
+    # ------------------------------------------------------------------
+    # Phase 9 — Sandbox mode (LLM-backed free conversational access)
+    # ------------------------------------------------------------------
+
+    def _sandbox_activate(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self._sandbox_mode[key] = True
+        self._sandbox_agent.clear_history(key)
+        self._audit_channel_event(
+            event="sandbox_activated",
+            command="sandbox",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="telegram.sandbox",
+            params={},
+        )
+        return assistant_responses.render_sandbox_activated()
+
+    def _sandbox_deactivate(self, *, chat_id: str, user_id: str, operator_id: str) -> str:
+        key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        was_active = self._sandbox_mode.pop(key, False)
+        self._sandbox_agent.clear_history(key)
+        if was_active:
+            self._audit_channel_event(
+                event="sandbox_deactivated",
+                command="sandbox",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=True, action_id="telegram.sandbox",
+                params={},
+            )
+        return assistant_responses.render_sandbox_deactivated()
+
+    def _handle_sandbox_message(
+        self, *, chat_id: str, user_id: str, operator_id: str, text: str
+    ) -> str:
+        key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        vault_summary = self._build_sandbox_vault_summary(operator_id=operator_id)
+        try:
+            response_text, action = self._sandbox_agent.chat(
+                key=key, message=text, vault_summary=vault_summary
+            )
+        except SandboxLLMAgentError as exc:
+            self.logger.warning("sandbox llm error: %s", exc)
+            return "[SANDBOX] El modelo local no respondió. Intenta de nuevo."
+
+        self._audit_channel_event(
+            event="sandbox_llm_invoked",
+            command="sandbox",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="telegram.sandbox",
+            params={"text_preview": text[:120]},
+        )
+
+        if action is None:
+            return f"[SANDBOX] {response_text}"
+
+        action_result = self._execute_sandbox_action(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id, action=action
+        )
+        return f"[SANDBOX] {response_text}\n\n{action_result}"
+
+    def _execute_sandbox_action(
+        self, *, chat_id: str, user_id: str, operator_id: str, action: dict
+    ) -> str:
+        action_id = action.get("action_id", "")
+        params = action.get("params", {})
+        effective = self.policy.get_effective_action_state(action_id)
+        if effective is None:
+            return f"Acción desconocida: {action_id}"
+        if effective.status != "enabled":
+            return f"Acción {action_id} no disponible (status={effective.status})."
+        operator = self._authorize_operator(
+            operator_id=operator_id,
+            permission=effective.permission,
+            command="sandbox",
+            chat_id=chat_id, user_id=user_id,
+            action_id=action_id,
+        )
+        if operator is None:
+            return f"Operador no autorizado para {action_id}."
+        result = self.broker.execute(
+            BrokerRequest(action_id=action_id, params=params, actor=operator_id)
+        )
+        self._audit_channel_event(
+            event="sandbox_action_executed" if result.ok else "sandbox_action_failed",
+            command="sandbox",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=result.ok, action_id=action_id,
+            params=self._safe_params_for_audit(params),
+            result=result.to_dict() if result.ok else None,
+            error=result.error, code=result.code,
+        )
+        if result.ok:
+            return assistant_responses.render_sandbox_action_result(
+                action_id=action_id, result=result.result
+            )
+        return assistant_responses.render_sandbox_action_error(
+            action_id=action_id,
+            error=result.error or "unknown",
+            code=result.code or "unknown",
+        )
+
+    def _build_sandbox_vault_summary(self, *, operator_id: str) -> str:
+        """Build a compact vault state summary for the LLM system prompt. Soft failures."""
+        if not self._can_operator(operator_id, "operator.read"):
+            return ""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return ""
+        lines: list[str] = []
+        try:
+            sections = list_vault_sections(vault_root)
+            if sections:
+                parts = ", ".join(f"{s.name} ({s.note_count})" for s in sections[:8])
+                lines.append(f"Secciones: {parts}")
+        except Exception:
+            pass
+        try:
+            pending = list_promotable_notes(vault_root=vault_root, max_results=50)
+            lines.append(f"Pendientes de triage: {len(pending)}")
+        except Exception:
+            pass
+        try:
+            reportable = list_reportable_notes(vault_root=vault_root, max_results=50)
+            if reportable:
+                lines.append(f"Listas para report: {len(reportable)}")
+        except Exception:
+            pass
+        try:
+            arts = read_pending_artifacts(vault_root)
+            if arts.staged_exists:
+                lines.append("STAGED_INPUT.md: presente")
+            if arts.report_exists:
+                lines.append("REPORT_INPUT.md: presente")
+        except Exception:
+            pass
+        return "\n".join(lines)
 
 
 def build_logger(log_level: str) -> logging.Logger:
