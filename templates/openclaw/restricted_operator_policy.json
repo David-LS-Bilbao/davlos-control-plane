@@ -112,6 +112,26 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Mueve una nota al directorio 50_Archivado del vault (no destructivo)"
+    },
+    "action.note.edit.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "note_edit_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Edita una nota existente: añade texto (append) o reemplaza el contenido (replace)"
+    },
+    "action.note.move.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "note_move_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Mueve una nota a otra carpeta del vault (no destructivo)"
     }
   },
   "operator_auth": {

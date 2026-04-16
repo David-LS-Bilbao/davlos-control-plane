@@ -952,6 +952,56 @@ class TelegramCommandProcessor:
                     result.result.get("to_path", "?"),
                 )
             return f"Error archivando nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "note_edit":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.note.edit.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.edit_note",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.note.edit.v1",
+                params={"note_path": pending.params.get("note_path"), "mode": pending.params.get("mode")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_note_edited(
+                    result.result.get("note_name", "?"),
+                    result.result.get("rel_path", "?"),
+                    result.result.get("mode", "?"),
+                )
+            return f"Error editando nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "note_move":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.note.move.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.move_note",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.note.move.v1",
+                params={"note_path": pending.params.get("note_path"), "dest_folder": pending.params.get("dest_folder")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_note_moved(
+                    result.result.get("note_name", "?"),
+                    result.result.get("from_path", "?"),
+                    result.result.get("to_path", "?"),
+                )
+            return f"Error moviendo nota.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1956,6 +2006,19 @@ class TelegramCommandProcessor:
         "mueve a archivo ",
         "archivar ",
     )
+    _OBS_EDIT_NOTE_PREFIXES: tuple[str, ...] = (
+        "añade a ",
+        "agrega a ",
+        "append a ",
+        "edita ",
+        "modifica ",
+        "reemplaza ",
+    )
+    _OBS_MOVE_NOTE_PREFIXES: tuple[str, ...] = (
+        "mueve ",
+        "mover ",
+        "traslada ",
+    )
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
@@ -2005,6 +2068,48 @@ class TelegramCommandProcessor:
                         "action_id": "action.note.archive.v1",
                         "params": {"note_ref": ref},
                     }
+
+        # --- Phase 9 E5: edit note (append / replace) ---
+        # Use original_text to preserve separators (: and .) stripped by normalize
+        orig_lower_e5 = original_text.lower().strip()
+        for prefix in self._OBS_EDIT_NOTE_PREFIXES:
+            if orig_lower_e5.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                mode = "replace" if prefix in {"edita ", "modifica ", "reemplaza "} else "append"
+                if ":" in remainder:
+                    note_part, _, content = remainder.partition(":")
+                    note_ref = note_part.strip()
+                    content = content.strip()
+                    if note_ref and content:
+                        return {
+                            "intent": "obsidian.edit_note",
+                            "action_id": "action.note.edit.v1",
+                            "params": {"note_ref": note_ref, "mode": mode, "content": content},
+                            "mutation": "note_edit",
+                            "summary": f"{'Añadir texto a' if mode == 'append' else 'Reemplazar'} '{note_ref}'",
+                            "reason": "telegram_obsidian_edit_note",
+                        }
+
+        # --- Phase 9 E6: move note to folder ---
+        # Use original_text to preserve filenames with dots/underscores
+        orig_lower_e6 = original_text.lower().strip()
+        for prefix in self._OBS_MOVE_NOTE_PREFIXES:
+            if orig_lower_e6.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                for sep in (" a la carpeta ", " a carpeta ", " hacia ", " a "):
+                    if sep.lower() in remainder.lower():
+                        idx = remainder.lower().index(sep.lower())
+                        note_ref = remainder[:idx].strip()
+                        dest_folder = remainder[idx + len(sep):].strip()
+                        if note_ref and dest_folder:
+                            return {
+                                "intent": "obsidian.move_note",
+                                "action_id": "action.note.move.v1",
+                                "params": {"note_ref": note_ref, "dest_folder": dest_folder},
+                                "mutation": "note_move",
+                                "summary": f"Mover '{note_ref}' a {dest_folder}",
+                                "reason": "telegram_obsidian_move_note",
+                            }
 
         # --- Phase 8 E3: create note in any folder ---
         orig_lower = original_text.lower().strip()
@@ -2401,6 +2506,31 @@ class TelegramCommandProcessor:
             return self._obsidian_archive_note(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 note_ref=resolved_ref, mode=mode,
+            )
+
+        # --- Phase 9 E5: edit note (append / replace) ---
+        if sub == "obsidian.edit_note":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
+            return self._obsidian_edit_note(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                note_ref=resolved_ref,
+                edit_mode=intent["params"]["mode"],
+                content=intent["params"]["content"],
+                mutation_mode=mode,
+            )
+
+        # --- Phase 9 E6: move note to folder ---
+        if sub == "obsidian.move_note":
+            resolved_ref = self._resolve_note_alias(
+                note_ref=intent["params"]["note_ref"], chat_id=chat_id, user_id=user_id
+            )
+            return self._obsidian_move_note(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                note_ref=resolved_ref,
+                dest_folder=intent["params"]["dest_folder"],
+                mode=mode,
             )
 
         # Unknown obsidian sub-intent — fall back to help
@@ -2903,6 +3033,108 @@ class TelegramCommandProcessor:
         return self._response(
             chat_id=chat_id, user_id=user_id, operator_id=operator_id,
             action_id="action.note.archive.v1", mode=mode, intent="note_archive",
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_edit_note(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        note_ref: str,
+        edit_mode: str,
+        content: str,
+        mutation_mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para editar notas."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            candidates = find_note_anywhere(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error buscando nota: {exc}"
+        if not candidates:
+            return assistant_responses.render_note_not_found_vault(note_ref)
+        if len(candidates) > 1:
+            return assistant_responses.render_note_ambiguous(candidates, note_ref)
+        rel_path, _ = candidates[0]
+        note_name = Path(rel_path).name
+        verb = "Añadir texto a" if edit_mode == "append" else "Reemplazar contenido de"
+        summary = f"note.edit | {verb} '{note_name}' (mode={edit_mode})"
+        params = {"note_path": rel_path, "mode": edit_mode, "content": content}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="note_edit",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="note_edit",
+            action_id="action.note.edit.v1",
+            params=params,
+            reason="telegram_obsidian_edit_note",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.edit_note",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.note.edit.v1",
+            params={"intent": "note_edit", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.note.edit.v1", mode=mutation_mode, intent="note_edit",
+            text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_move_note(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        note_ref: str,
+        dest_folder: str,
+        mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para mover notas."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            candidates = find_note_anywhere(vault_root, note_ref)
+        except Exception as exc:
+            return f"Error buscando nota: {exc}"
+        if not candidates:
+            return assistant_responses.render_note_not_found_vault(note_ref)
+        if len(candidates) > 1:
+            return assistant_responses.render_note_ambiguous(candidates, note_ref)
+        rel_path, _ = candidates[0]
+        note_name = Path(rel_path).name
+        # Fuzzy-resolve dest_folder
+        resolved_folder = resolve_vault_section(vault_root, dest_folder) or dest_folder
+        summary = f"note.move | '{note_name}' → {resolved_folder}"
+        params = {"note_path": rel_path, "dest_folder": resolved_folder}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="note_move",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="note_move",
+            action_id="action.note.move.v1",
+            params=params,
+            reason="telegram_obsidian_move_note",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.move_note",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.note.move.v1",
+            params={"intent": "note_move", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.note.move.v1", mode=mode, intent="note_move",
             text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
         )
 

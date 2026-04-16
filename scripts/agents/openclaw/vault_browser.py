@@ -86,7 +86,9 @@ def find_note_anywhere(vault_root: str, note_ref: str) -> list[tuple[str, Path]]
     root = Path(vault_root).resolve()
     if not root.is_dir():
         return []
-    ref_norm = _normalize_name(note_ref)
+    # Also try matching without .md extension so "demo.md" finds "demo.md"
+    ref_stripped = note_ref[:-3] if note_ref.lower().endswith(".md") else note_ref
+    ref_norm = _normalize_name(ref_stripped)
     matches: list[tuple[str, Path]] = []
     for md_file in sorted(root.rglob("*.md")):
         name_norm = _normalize_name(md_file.stem)

@@ -23,6 +23,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "- action.report.promote.v1: Promueve nota a report. Params: note_name (str)\n"
     "- action.note.create.v1: Crea nota en carpeta. Params: folder (str), title (str), body (str)\n"
     "- action.note.archive.v1: Archiva una nota. Params: note_path (str)\n"
+    "- action.note.edit.v1: Edita nota existente. Params: note_path (str), mode ('append'|'replace'), content (str)\n"
+    "- action.note.move.v1: Mueve nota a otra carpeta. Params: note_path (str), dest_folder (str)\n"
     "\n"
     "Para ejecutar una acción incluye al FINAL de tu respuesta EXACTAMENTE esto:\n"
     '<action>{"action_id": "...", "params": {...}}</action>\n'

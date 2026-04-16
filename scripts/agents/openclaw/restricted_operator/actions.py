@@ -480,6 +480,149 @@ class NoteArchiveAction(BaseAction):
         )
 
 
+class NoteEditAction(BaseAction):
+    """E5 — Append text to or fully replace the content of an existing vault note."""
+
+    action_id = "action.note.edit.v1"
+    _EXCLUDED_FOLDERS: frozenset[str] = frozenset({"Agent", ".obsidian", ".git"})
+    _ALLOWED_MODES: frozenset[str] = frozenset({"append", "replace"})
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        content = params.get("content", "")
+        return {
+            "note_path": params.get("note_path"),
+            "mode": params.get("mode"),
+            "content_bytes": len(content.encode("utf-8")) if isinstance(content, str) else 0,
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+        note_path_str = self._require_string(params.get("note_path"), "note_path", max_len=512)
+        mode = self._require_string(params.get("mode"), "mode", max_len=16)
+        content = self._require_string(
+            params.get("content"), "content",
+            max_len=self.policy.broker.max_write_bytes,
+        )
+
+        if mode not in self._ALLOWED_MODES:
+            raise ActionError("invalid_params", f"mode must be one of: {', '.join(sorted(self._ALLOWED_MODES))}")
+        if ".." in note_path_str or note_path_str.startswith("/"):
+            raise ActionError("invalid_params", "note_path must be relative without traversal")
+
+        root = Path(vault_root).resolve()
+        note_path = (root / note_path_str).resolve()
+        if not str(note_path).startswith(str(root)):
+            raise ActionError("invalid_params", "note_path resolves outside vault")
+        if not note_path.is_file():
+            raise ActionError("not_found", f"note not found: {note_path_str}")
+
+        # Block edits to reserved folders
+        try:
+            parts = note_path.relative_to(root).parts
+        except ValueError:
+            parts = ()
+        if parts and parts[0] in self._EXCLUDED_FOLDERS:
+            raise ActionError("forbidden", "editing notes in reserved folders is not allowed")
+
+        if mode == "append":
+            existing = note_path.read_text(encoding="utf-8")
+            new_content = existing.rstrip("\n") + "\n\n" + content + "\n"
+        else:  # replace
+            new_content = content if content.endswith("\n") else content + "\n"
+
+        bytes_written = len(new_content.encode("utf-8"))
+        note_path.write_text(new_content, encoding="utf-8")
+        try:
+            rel_path = str(note_path.relative_to(root))
+        except ValueError:
+            rel_path = note_path_str
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "note_name": note_path.name,
+                "rel_path": rel_path,
+                "mode": mode,
+                "bytes_written": bytes_written,
+            },
+            audit_params=self.audit_params({"note_path": note_path_str, "mode": mode, "content": content}),
+        )
+
+
+class NoteMoveFolderAction(BaseAction):
+    """E6 — Move a note to a different vault folder (not archive-specific)."""
+
+    action_id = "action.note.move.v1"
+    _EXCLUDED_FOLDERS: frozenset[str] = frozenset({"Agent", "Agent/Inbox_Agent", ".obsidian", ".git"})
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_path": params.get("note_path"),
+            "dest_folder": params.get("dest_folder"),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+        note_path_str = self._require_string(params.get("note_path"), "note_path", max_len=512)
+        dest_folder = self._require_string(params.get("dest_folder"), "dest_folder", max_len=128)
+
+        if ".." in note_path_str or note_path_str.startswith("/"):
+            raise ActionError("invalid_params", "note_path must be relative without traversal")
+        if ".." in dest_folder or dest_folder.startswith("/"):
+            raise ActionError("invalid_params", "dest_folder must be relative without traversal")
+        if dest_folder in self._EXCLUDED_FOLDERS or dest_folder.startswith("Agent"):
+            raise ActionError("forbidden", "destination folder is reserved for pipeline use")
+
+        root = Path(vault_root).resolve()
+        source = (root / note_path_str).resolve()
+        if not str(source).startswith(str(root)):
+            raise ActionError("invalid_params", "note_path resolves outside vault")
+        if not source.is_file():
+            raise ActionError("not_found", f"note not found: {note_path_str}")
+
+        dest_dir = (root / dest_folder).resolve()
+        if not str(dest_dir).startswith(str(root)):
+            raise ActionError("invalid_params", "dest_folder resolves outside vault")
+        if not dest_dir.is_dir():
+            raise ActionError("not_found", f"destination folder '{dest_folder}' does not exist in vault")
+
+        # Check source is not in a reserved folder
+        try:
+            src_parts = source.relative_to(root).parts
+        except ValueError:
+            src_parts = ()
+        if src_parts and src_parts[0] in {"Agent", ".obsidian", ".git"}:
+            raise ActionError("forbidden", "moving notes from reserved folders is not allowed")
+
+        dest_path = dest_dir / source.name
+        if dest_path.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dest_path = dest_dir / f"{source.stem}_{ts}{source.suffix}"
+
+        source.rename(dest_path)
+        try:
+            from_rel = str(source.relative_to(root))
+            to_rel = str(dest_path.relative_to(root))
+        except ValueError:
+            from_rel = note_path_str
+            to_rel = f"{dest_folder}/{dest_path.name}"
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "note_name": source.name,
+                "from_path": from_rel,
+                "to_path": to_rel,
+                "dest_folder": dest_folder,
+            },
+            audit_params=self.audit_params({"note_path": note_path_str, "dest_folder": dest_folder}),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -492,5 +635,7 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         ReportPromoteAction(policy),
         NoteCreateAction(policy),
         NoteArchiveAction(policy),
+        NoteEditAction(policy),
+        NoteMoveFolderAction(policy),
     ]
     return {action.action_id: action for action in actions}

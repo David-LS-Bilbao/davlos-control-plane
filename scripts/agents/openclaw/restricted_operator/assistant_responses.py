@@ -522,3 +522,12 @@ def render_sandbox_action_result(*, action_id: str, result: dict) -> str:
 
 def render_sandbox_action_error(*, action_id: str, error: str, code: str) -> str:
     return f"Error ejecutando {action_id}.\ncode={code}\nerror={error}"
+
+
+def render_note_edited(note_name: str, rel_path: str, mode: str) -> str:
+    verb = "Texto añadido" if mode == "append" else "Nota reemplazada"
+    return f"{verb}.\n{rel_path}"
+
+
+def render_note_moved(note_name: str, from_path: str, to_path: str) -> str:
+    return f"Nota movida.\nde: {from_path}\na:  {to_path}"
