@@ -13,6 +13,12 @@ _EXCLUDED_DIRS: frozenset[str] = frozenset({"Agent", ".obsidian", ".git"})
 _HIDDEN_PATTERN = re.compile(r"^\.")
 # Pipeline artifact files — excluded from note listings and search results
 _PIPELINE_FILES: frozenset[str] = frozenset({"STAGED_INPUT.md", "REPORT_INPUT.md"})
+# Agent sub-zones readable by users (read-only, no mutations allowed via these paths)
+_AGENT_READABLE_ZONES: tuple[tuple[str, str], ...] = (
+    ("Drafts_Agent",  "Agent/Drafts_Agent"),
+    ("Reports_Agent", "Agent/Reports_Agent"),
+    ("Heartbeat",     "Agent/Heartbeat"),
+)
 
 MAX_CONTENT_LINES = 60
 
@@ -63,6 +69,22 @@ def list_vault_sections(vault_root: str) -> list[VaultSection]:
         count = sum(1 for f in entry.rglob("*.md") if f.is_file() and f.name not in _PIPELINE_FILES)
         sections.append(VaultSection(name=entry.name, rel_path=entry.name, note_count=count))
     return sections
+
+
+def list_agent_zones(vault_root: str) -> list[VaultSection]:
+    """List readable Agent sub-zones (Drafts_Agent, Reports_Agent, Heartbeat)."""
+    root = Path(vault_root).resolve()
+    zones = []
+    for name, rel in _AGENT_READABLE_ZONES:
+        path = root / rel
+        if not path.is_dir():
+            continue
+        count = sum(
+            1 for f in path.iterdir()
+            if f.is_file() and f.suffix == ".md" and f.name not in _PIPELINE_FILES
+        )
+        zones.append(VaultSection(name=name, rel_path=rel, note_count=count))
+    return zones
 
 
 def resolve_vault_section(vault_root: str, folder_ref: str) -> str | None:

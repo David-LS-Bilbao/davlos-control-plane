@@ -39,6 +39,7 @@ from obsidian_intent_resolver import ResolveResult, get_note_status, resolve_not
 from vault_artifact_reader import read_pending_artifacts  # noqa: E402
 from vault_browser import (  # noqa: E402
     find_note_anywhere,
+    list_agent_zones,
     list_vault_sections,
     list_notes_in_section,
     read_note_content,
@@ -2001,6 +2002,20 @@ class TelegramCommandProcessor:
         "explorar vault",
         "carpetas",
     })
+    _OBS_AGENT_ZONES_TRIGGERS: frozenset[str] = frozenset({
+        "zonas del agente",
+        "que hay en el agente",
+        "ver zonas del agente",
+        "borradores del agente",
+        "reportes del agente",
+        "ver borradores",
+        "ver reportes",
+        "ver heartbeats",
+        "que borradores hay",
+        "que reportes hay",
+        "que heartbeats hay",
+        "zonas agente",
+    })
     _OBS_LIST_SECTION_PREFIXES: tuple[str, ...] = (
         "que hay en ",
         "notas en la carpeta ",
@@ -2083,6 +2098,27 @@ class TelegramCommandProcessor:
         # --- Phase 8 E2: vault sections ---
         if normalized in self._OBS_VAULT_SECTIONS_TRIGGERS:
             return {"intent": "obsidian.list_sections", "action_id": "telegram.command", "params": {}}
+
+        # --- Agent zones (Drafts_Agent, Reports_Agent, Heartbeat) ---
+        if normalized in self._OBS_AGENT_ZONES_TRIGGERS:
+            return {"intent": "obsidian.list_agent_zones", "action_id": "telegram.command", "params": {}}
+
+        # "ver drafts" / "ver reports" / "ver heartbeat" con zona específica
+        for zone_trigger, zone_rel, zone_name in (
+            ("borradores", "Agent/Drafts_Agent", "Drafts_Agent"),
+            ("drafts",     "Agent/Drafts_Agent", "Drafts_Agent"),
+            ("reports",    "Agent/Reports_Agent", "Reports_Agent"),
+            ("reportes",   "Agent/Reports_Agent", "Reports_Agent"),
+            ("heartbeats", "Agent/Heartbeat",     "Heartbeat"),
+            ("heartbeat",  "Agent/Heartbeat",     "Heartbeat"),
+        ):
+            if normalized in {f"ver {zone_trigger}", f"listar {zone_trigger}", f"que hay en {zone_trigger}",
+                               f"notas en {zone_trigger}", zone_trigger}:
+                return {
+                    "intent": "obsidian.list_agent_zone",
+                    "action_id": "telegram.command",
+                    "params": {"zone_rel": zone_rel, "zone_name": zone_name},
+                }
 
         for prefix in self._OBS_LIST_SECTION_PREFIXES:
             if normalized.startswith(prefix):
@@ -2508,6 +2544,23 @@ class TelegramCommandProcessor:
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 action_id="telegram.command", mode=mode, intent=sub,
                 text=self._obsidian_list_sections(operator_id=operator_id),
+            )
+
+        if sub == "obsidian.list_agent_zones":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_agent_zones(),
+            )
+
+        if sub == "obsidian.list_agent_zone":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_agent_zone(
+                    zone_rel=intent["params"]["zone_rel"],
+                    zone_name=intent["params"]["zone_name"],
+                ),
             )
 
         if sub == "obsidian.list_section_notes":
@@ -2937,6 +2990,42 @@ class TelegramCommandProcessor:
         except Exception as exc:
             return f"Error listando secciones: {exc}"
         return assistant_responses.render_vault_sections(sections)
+
+    def _obsidian_list_agent_zones(self) -> str:
+        """List all readable Agent sub-zones with note counts."""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            zones = list_agent_zones(vault_root)
+        except Exception as exc:
+            return f"Error listando zonas del agente: {exc}"
+        if not zones:
+            return "No hay zonas del agente disponibles."
+        lines = ["Zonas del agente (solo lectura):"]
+        for z in zones:
+            lines.append(f"- {z.name}  ({z.note_count} nota(s))  — '{z.name.lower()}'")
+        lines.append("\nUsa 'ver borradores', 'ver reportes' o 'ver heartbeats' para listar notas.")
+        return "\n".join(lines)
+
+    def _obsidian_list_agent_zone(self, *, zone_rel: str, zone_name: str) -> str:
+        """List notes inside a specific Agent sub-zone."""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            notes = list_notes_in_section(vault_root, zone_rel)
+        except Exception as exc:
+            return f"Error listando {zone_name}: {exc}"
+        if not notes:
+            return f"{zone_name} está vacío."
+        lines = [f"Notas en {zone_name} ({len(notes)}):"]
+        for n in notes[:20]:
+            lines.append(f"- {n}")
+        if len(notes) > 20:
+            lines.append(f"… y {len(notes) - 20} más.")
+        lines.append("\nUsa 'léeme <nombre>' para leer cualquiera.")
+        return "\n".join(lines)
 
     def _obsidian_list_section_notes(self, *, operator_id: str, folder_ref: str) -> str:
         """E2 — list notes in a vault section (fuzzy folder resolution)."""
