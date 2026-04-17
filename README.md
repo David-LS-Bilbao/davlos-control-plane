@@ -42,82 +42,120 @@ Hechos confirmados en la documentación operativa actual:
 
 ## Estado de OpenClaw
 
-Checkpoint actual:
+Checkpoint actual (2026-04-17) — **Fases 1-9 completas, rama `feat/phase8-vault-crud` pendiente de merge**:
 
-- despliegue MVP local ejecutado y validado en host
-- broker restringido operativo en host con policy viva y auditoría
-- canal Telegram privado operativo como runtime persistente
-- helper readonly host-side instalado para inspección segura de broker y Telegram desde consola
-- runtime materializado en host bajo:
-  - `/opt/automation/agents/openclaw`
-  - `/etc/davlos/secrets/openclaw`
-- estado validado por evidencia:
-  - contenedor `openclaw-gateway` arrancado
-  - `inference-gateway` host-side operativo como upstream interno
-  - red dedicada `agents_net`
-  - endpoint efectivo para OpenClaw: `http://172.22.0.1:11440/v1`
-  - health MVP correcto y comprobación TCP válida en `127.0.0.1:18789`
-  - imagen desplegada: `ghcr.io/openclaw/openclaw:2026.2.3`
-- scripts relevantes:
-  - `scripts/agents/openclaw/10_stage_runtime.sh`
-  - `scripts/agents/openclaw/20_validate_runtime_readiness.sh`
-  - `scripts/agents/openclaw/30_first_local_deploy.sh`
-- bootstrap documental:
-  - `docs/AGENTS.md`
-  - `docs/INFERENCE_GATEWAY_OLLAMA_MVP.md`
-  - `docs/AGENT_ZONE_SECURITY_MVP.md`
-  - `docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md`
-  - `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
-  - `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
-  - `templates/openclaw/openclaw.json.example`
-- operación integrada actual en consola:
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh overview`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-capabilities`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-capabilities-audit`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-telegram`
-  - `bash /opt/control-plane/scripts/console/davlos-vpn-console.sh openclaw-diagnostics`
-- helper readonly host-side para visibilidad runtime:
-  - `/usr/local/sbin/davlos-openclaw-readonly`
-  - `/etc/sudoers.d/davlos-openclaw-readonly`
-- superficie operativa actual:
-  - dashboard de consola con estado de host, broker, Telegram y runtime
-  - consola reorganizada por runtime, broker, seguridad, evidencias y diagnóstico
-  - control guiado de capacidades con TTL y reset one-shot
-  - presets de seguridad en consola
-  - Telegram como canal corto de consulta, ejecución cerrada y modo conversacional controlado
-  - local-first en Telegram: frases conocidas siguen por reglas; el fallback LLM solo entra en `wake` cuando el matcher local no resuelve
-  - Gemini puede operar como fallback controlado en runtime mediante env seguro, sin alterar el perímetro `auth/policy/broker`
-- límites que siguen vigentes:
-  - no hay UI web final de control; la operación principal sigue en consola + Telegram
-  - start/stop/restart no se exponen directamente desde la consola
-  - el hardening final de egress no se declara cerrado en este README
+### Runtime
+
+- Servicio systemd: `openclaw-telegram-bot.service` (bot Python directo en host, sin Docker)
+- Policy viva: `/opt/automation/agents/openclaw/broker/restricted_operator_policy.json`
+- LLM local: `qwen2.5:3b` vía Ollama en `http://127.0.0.1:11440/v1/chat/completions`
+- Secretos: `/etc/davlos/secrets/openclaw`
+- Vault Obsidian: `vault_root` configurado en policy bajo `vault_inbox.vault_root`
+
+### Capacidades por fase
+
+| Fase | Descripción | Estado |
+|---|---|---|
+| 1-3 | Inbox write, draft promote, report promote | Completa, en main |
+| 4 | Capa conversacional Obsidian (intents locales) | Completa, en main |
+| 5 | Vault read chat (E1 básico, búsqueda por nombre) | Completa, en main |
+| 6 | Higiene operativa y UX (errores conversacionales, artefactos pipeline) | Completa, en main |
+| 7 | Modo agentico A/B/C/D (wake persistente, confirmaciones, TTL) | Completa, en main |
+| 8 | Vault CRUD E1-E4 (leer, explorar, crear, archivar) | Completa, rama `feat/phase8-vault-crud` |
+| 9 | Sandbox modo libre + E5/E6 (editar, mover notas; LLM con contexto vault) | Completa, rama `feat/phase8-vault-crud` |
+
+### Acciones broker registradas
+
+`action.health.general.v1`, `action.logs.read.v1`, `action.webhook.trigger.v1`,
+`action.openclaw.restart.v1`, `action.dropzone.write.v1`, `action.inbox.write.v1`,
+`action.draft.promote.v1`, `action.report.promote.v1`, `action.note.create.v1`,
+`action.note.archive.v1`, `action.note.edit.v1`, `action.note.move.v1`,
+`action.heartbeat.write.v1`, `action.draft.write.v1`
+
+### Sandbox mode (Phase 9)
+
+- Activación: `activa modo libre` / `libera openclaw` / `sandbox on`
+- Desactivación: `sal del sandbox` / `modo normal` / `sandbox off`
+- En sandbox: mensajes enrutados a `qwen2.5:3b` con historial de sesión e inyección de contexto vault
+- LLM puede ejecutar acciones vault via tags `<action>{...}</action>` sin confirmación adicional
+- Pipeline artifacts (`STAGED_INPUT.md`, `REPORT_INPUT.md`) excluidos de todos los listados públicos
+
+### Archivos clave
+
+- `scripts/agents/openclaw/restricted_operator/telegram_bot.py` — bot principal
+- `scripts/agents/openclaw/restricted_operator/actions.py` — broker actions (incluyendo E3-E6)
+- `scripts/agents/openclaw/restricted_operator/policy.py` — PolicyStore
+- `scripts/agents/openclaw/vault_browser.py` — navegación read-only del vault
+- `scripts/agents/openclaw/llm_agent.py` — SandboxLLMAgent (Phase 9)
+- `scripts/agents/openclaw/vault_artifact_reader.py` — lector de artefactos pipeline
+- `templates/openclaw/restricted_operator_policy.json` — plantilla de policy
+
+### Operación
+
+```bash
+# Estado del servicio
+systemctl status openclaw-telegram-bot.service
+
+# Restart
+sudo systemctl restart openclaw-telegram-bot.service
+
+# Tests
+cd /opt/control-plane && python3 -m unittest discover -s tests/restricted_operator -p "test_*.py"
+```
+
+### Integración obsi-claw-AI_agent
+
+- `vault_root` configurado en `/opt/data/obsidian/vault-main` (vault Obsidian vía Syncthing)
+- `action.heartbeat.write.v1` conectado con el contrato heartbeat de obsi-claw (Agent/Heartbeat/)
+- `action.draft.write.v1` implementa ADR-003: escribe `STAGED_INPUT.md` en Agent/Inbox_Agent/ y genera borrador en Agent/Drafts_Agent/ con estado `pending_human_review`
+- Agent sub-zones (Drafts_Agent, Reports_Agent, Heartbeat) navegables en modo lectura desde Telegram
+
+### Límites vigentes
+
+- Sin UI web; operación principal por consola + Telegram
+- Hardening final de egress no declarado cerrado
+- `action.note.edit.v1` y `action.note.move.v1` habilitados en policy pero requieren validación E2E
+- `action.inbox.write.v1`, `action.draft.promote.v1`, `action.report.promote.v1` requieren revisión humana (HITL) antes de promover
 
 ## Documentos clave
 
+### OpenClaw — Fases por funcionalidad
+
+- `docs/features/telegram-obsiclaw/PHASE_1_INBOX_WRITE.md`
+- `docs/features/telegram-obsiclaw/PHASE_2_DRAFT_PROMOTE.md`
+- `docs/features/telegram-obsiclaw/PHASE_3_REPORT_PROMOTE.md`
+- `docs/features/telegram-obsiclaw/PHASE_4_OBSIDIAN_CONVERSATIONAL_LAYER.md`
+- `docs/features/telegram-obsiclaw/PHASE_5_VAULT_READ_CHAT_MVP.md`
+- `docs/features/telegram-obsiclaw/PHASE_6_OPERATIONAL_HYGIENE_AND_UX.md`
+- `docs/features/telegram-obsiclaw/PHASE_7_AGENTIC_MODE.md`
+- `docs/features/telegram-obsiclaw/PHASE_8_VAULT_CRUD.md`
+- `docs/features/telegram-obsiclaw/PHASE_9_SANDBOX_MODE.md`
+
+### Instalación y uso
+
+- `docs/INSTALL.md` — guía de instalación paso a paso
+- `docs/USER_MANUAL.md` — manual de usuario del bot Telegram
+
+### Infraestructura y seguridad
+
 - `docs/ARCHITECTURE.md`
 - `docs/AGENTS.md`
+- `docs/INFERENCE_GATEWAY_OLLAMA_MVP.md`
+- `docs/AGENT_ZONE_SECURITY_MVP.md`
+- `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
+- `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
+- `runbooks/OPENCLAW_DEPLOY_MVP.md`
+- `runbooks/OPENCLAW_ROLLBACK_MVP.md`
+
+### n8n
+
 - `runbooks/N8N_PRECHECKS_EXECUTION.md`
 - `runbooks/N8N_BACKUP_AND_ROLLBACK_MINIMUM.md`
 - `runbooks/N8N_MIGRATION_WINDOW_PLAN.md`
 - `runbooks/N8N_POST_MIGRATION_VALIDATION.md`
-- `evidence/agents/OPENCLAW_MVP_VALIDATION_2026-03-31.md`
-- `docs/INFERENCE_GATEWAY_OLLAMA_MVP.md`
-- `docs/AGENT_ZONE_SECURITY_MVP.md`
-- `docs/AGENT_ZONE_EGRESS_ALLOWLIST_MVP.md`
-- `runbooks/OPENCLAW_DEPLOY_MVP.md`
-- `docs/OPENCLAW_SECURITY_BOOTSTRAP_MVP.md`
-- `docs/OPENCLAW_HOST_SECRETS_CONTRACT_MVP.md`
-- `docs/CONSOLE_OPENCLAW_CAPABILITIES_MVP.md`
-- `docs/DAVLOS_VPN_CONSOLE_PRESENTATION_MVP.md`
-- `docs/OPENCLAW_OPERATOR_FLOWS_MVP.md`
-- `docs/TELEGRAM_OPENCLAW_RUNTIME_FINAL.md`
-- `docs/TELEGRAM_OPENCLAW_CONVERSATIONAL_MVP.md`
-- `docs/TELEGRAM_OPENCLAW_LLM_FALLBACK_PHASE_16_17.md`
-- `docs/OPENCLAW_READONLY_HELPER_INSTALL.md`
 
 Nota:
-Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en este `README`, en `evidence/FASE_4_ESTADO.md`, en `evidence/PHASE4_PAUSE_AND_4_2_RECOVERED_2026-03-31.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` en este checkpoint es: boundary operativo con `inference-gateway`, broker restringido con policy viva y auditoría, Telegram persistente como canal corto, modo conversacional controlado `local-first`, fallback LLM acotado a `wake` y helper readonly host-side para inspección segura desde consola. El hardening final de egress sigue documentado por fases y no se declara cerrado en este `README`.
+Algunos documentos conservan contexto histórico y deben leerse con fecha y alcance. La verdad operativa actual de `n8n` queda reflejada en `evidence/FASE_4_ESTADO.md` y en las evidencias recientes de prechecks. La verdad actual de `OpenClaw` (2026-04-17): bot Python en systemd, broker con policy viva y auditoría, Telegram como canal conversacional con vault CRUD completo (Fases 1-9), sandbox mode con LLM local `qwen2.5:3b`, y pipeline artifacts excluidos de listados públicos. El hardening final de egress no se declara cerrado en este `README`.
 
 ## Regla base
 

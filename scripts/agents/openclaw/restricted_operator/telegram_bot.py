@@ -39,6 +39,7 @@ from obsidian_intent_resolver import ResolveResult, get_note_status, resolve_not
 from vault_artifact_reader import read_pending_artifacts  # noqa: E402
 from vault_browser import (  # noqa: E402
     find_note_anywhere,
+    list_agent_zones,
     list_vault_sections,
     list_notes_in_section,
     read_note_content,
@@ -1004,6 +1005,58 @@ class TelegramCommandProcessor:
                     result.result.get("to_path", "?"),
                 )
             return f"Error moviendo nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "draft_write":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.draft.write.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.draft_write",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok, action_id="action.draft.write.v1",
+                params={"title": pending.params.get("title")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_draft_written(
+                    result.result.get("draft_name", "?"),
+                    result.result.get("draft_rel", "?"),
+                    result.result.get("title", "?"),
+                )
+            if result.code == "conflict":
+                return assistant_responses.render_draft_write_conflict()
+            return f"Error escribiendo borrador.\ncode={result.code}\nerror={result.error}"
+
+        elif pending.mutation == "heartbeat_write":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.heartbeat.write.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.heartbeat_write",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.heartbeat.write.v1",
+                params={"heartbeat_type": pending.params.get("heartbeat_type")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_heartbeat_written(
+                    result.result.get("note_name", "?"),
+                    result.result.get("rel_path", "?"),
+                    result.result.get("heartbeat_type", "?"),
+                )
+            return f"Error escribiendo heartbeat.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -1976,6 +2029,14 @@ class TelegramCommandProcessor:
         "explorar vault",
         "carpetas",
     })
+    _OBS_AGENT_ZONES_TRIGGERS: frozenset[str] = frozenset({
+        "zonas del agente",
+        "que hay en el agente",
+        "ver zonas del agente",
+        "borradores del agente",
+        "reportes del agente",
+        "zonas agente",
+    })
     _OBS_LIST_SECTION_PREFIXES: tuple[str, ...] = (
         "que hay en ",
         "notas en la carpeta ",
@@ -1993,6 +2054,14 @@ class TelegramCommandProcessor:
         "muestrame el contenido de ",
         "abre la nota ",
         "lee ",
+    )
+    _OBS_DRAFT_WRITE_PREFIXES: tuple[str, ...] = (
+        "escribe borrador: ",
+        "escribe un borrador: ",
+        "crea borrador: ",
+        "crea un borrador: ",
+        "nuevo borrador: ",
+        "borrador: ",
     )
     _OBS_CREATE_NOTE_PREFIXES: tuple[str, ...] = (
         "crea una nota en ",
@@ -2021,6 +2090,15 @@ class TelegramCommandProcessor:
         "mover ",
         "traslada ",
     )
+    _OBS_HEARTBEAT_TRIGGERS: frozenset[str] = frozenset({
+        "escribe heartbeat",
+        "heartbeat",
+        "heartbeat runtime",
+        "registra estado",
+        "registra estado del sistema",
+        "anota estado",
+        "guarda estado del sistema",
+    })
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
@@ -2049,6 +2127,27 @@ class TelegramCommandProcessor:
         # --- Phase 8 E2: vault sections ---
         if normalized in self._OBS_VAULT_SECTIONS_TRIGGERS:
             return {"intent": "obsidian.list_sections", "action_id": "telegram.command", "params": {}}
+
+        # --- Agent zones (Drafts_Agent, Reports_Agent, Heartbeat) ---
+        if normalized in self._OBS_AGENT_ZONES_TRIGGERS:
+            return {"intent": "obsidian.list_agent_zones", "action_id": "telegram.command", "params": {}}
+
+        # "ver drafts" / "ver reports" / "ver heartbeat" con zona específica
+        for zone_trigger, zone_rel, zone_name in (
+            ("borradores", "Agent/Drafts_Agent", "Drafts_Agent"),
+            ("drafts",     "Agent/Drafts_Agent", "Drafts_Agent"),
+            ("reports",    "Agent/Reports_Agent", "Reports_Agent"),
+            ("reportes",   "Agent/Reports_Agent", "Reports_Agent"),
+            ("heartbeats", "Agent/Heartbeat",     "Heartbeat"),
+            ("heartbeat",  "Agent/Heartbeat",     "Heartbeat"),
+        ):
+            if normalized in {f"ver {zone_trigger}", f"listar {zone_trigger}", f"que hay en {zone_trigger}",
+                               f"notas en {zone_trigger}", zone_trigger}:
+                return {
+                    "intent": "obsidian.list_agent_zone",
+                    "action_id": "telegram.command",
+                    "params": {"zone_rel": zone_rel, "zone_name": zone_name},
+                }
 
         for prefix in self._OBS_LIST_SECTION_PREFIXES:
             if normalized.startswith(prefix):
@@ -2112,6 +2211,53 @@ class TelegramCommandProcessor:
                                 "summary": f"Mover '{note_ref}' a {dest_folder}",
                                 "reason": "telegram_obsidian_move_note",
                             }
+
+        # --- Heartbeat write: registra estado del sistema en Agent/Heartbeat ---
+        if normalized in {t.replace(" ", "") if " " not in t else t for t in self._OBS_HEARTBEAT_TRIGGERS} \
+                or normalized in self._OBS_HEARTBEAT_TRIGGERS:
+            # Extract optional context after ":" separator
+            orig_lower_hb = original_text.lower().strip()
+            context = ""
+            for trigger in self._OBS_HEARTBEAT_TRIGGERS:
+                if orig_lower_hb.startswith(trigger) and ":" in original_text:
+                    idx = original_text.index(":")
+                    context = original_text[idx + 1:].strip()
+                    break
+            if not context:
+                context = "Heartbeat manual solicitado desde Telegram."
+            return {
+                "intent": "obsidian.heartbeat_write",
+                "action_id": "action.heartbeat.write.v1",
+                "params": {"heartbeat_type": "runtime-status", "context": context},
+                "mutation": "heartbeat_write",
+                "summary": f"heartbeat.write | Agent/Heartbeat",
+                "reason": "telegram_heartbeat_write",
+            }
+
+        # --- Draft write: escribe borrador directo a Agent/Drafts_Agent ---
+        # Format: "escribe borrador: <título> :: <cuerpo>"
+        orig_lower_dw = original_text.lower().strip()
+        for prefix in self._OBS_DRAFT_WRITE_PREFIXES:
+            if orig_lower_dw.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                if "::" in remainder:
+                    title, _, body = remainder.partition("::")
+                    title = title.strip()
+                    body = body.strip()
+                    if title and body:
+                        return {
+                            "intent": "obsidian.draft_write",
+                            "action_id": "action.draft.write.v1",
+                            "params": {"title": title, "body": body},
+                            "mutation": "draft_write",
+                            "summary": f"draft.write | '{title}'",
+                            "reason": "telegram_draft_write",
+                        }
+                return {
+                    "intent": "obsidian.draft_write_clarify",
+                    "action_id": "telegram.command",
+                    "params": {},
+                }
 
         # --- Phase 8 E3: create note in any folder ---
         orig_lower = original_text.lower().strip()
@@ -2454,6 +2600,23 @@ class TelegramCommandProcessor:
                 text=self._obsidian_list_sections(operator_id=operator_id),
             )
 
+        if sub == "obsidian.list_agent_zones":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_agent_zones(),
+            )
+
+        if sub == "obsidian.list_agent_zone":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=self._obsidian_list_agent_zone(
+                    zone_rel=intent["params"]["zone_rel"],
+                    zone_name=intent["params"]["zone_name"],
+                ),
+            )
+
         if sub == "obsidian.list_section_notes":
             return self._response(
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
@@ -2474,6 +2637,28 @@ class TelegramCommandProcessor:
                 text=self._obsidian_read_content(
                     operator_id=operator_id, note_ref=resolved_ref,
                     chat_id=chat_id, user_id=user_id,
+                ),
+            )
+
+        # --- Draft write ---
+        if sub == "obsidian.draft_write":
+            return self._obsidian_draft_write(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                title=intent["params"]["title"],
+                body=intent["params"]["body"],
+                mode=mode,
+            )
+
+        if sub == "obsidian.draft_write_clarify":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=(
+                    "Formato para escribir un borrador:\n"
+                    "  escribe borrador: <título> :: <contenido>\n"
+                    "Ejemplo:\n"
+                    "  escribe borrador: Ideas para sprint 6 :: Aquí van los detalles del sprint\n"
+                    "El borrador se guarda en Agent/Drafts_Agent con estado pending_human_review."
                 ),
             )
 
@@ -2532,6 +2717,15 @@ class TelegramCommandProcessor:
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 note_ref=resolved_ref,
                 dest_folder=intent["params"]["dest_folder"],
+                mode=mode,
+            )
+
+        # --- Heartbeat write ---
+        if sub == "obsidian.heartbeat_write":
+            return self._obsidian_heartbeat_write(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                heartbeat_type=intent["params"].get("heartbeat_type", "runtime-status"),
+                context=intent["params"].get("context", ""),
                 mode=mode,
             )
 
@@ -2873,6 +3067,42 @@ class TelegramCommandProcessor:
             return f"Error listando secciones: {exc}"
         return assistant_responses.render_vault_sections(sections)
 
+    def _obsidian_list_agent_zones(self) -> str:
+        """List all readable Agent sub-zones with note counts."""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            zones = list_agent_zones(vault_root)
+        except Exception as exc:
+            return f"Error listando zonas del agente: {exc}"
+        if not zones:
+            return "No hay zonas del agente disponibles."
+        lines = ["Zonas del agente (solo lectura):"]
+        for z in zones:
+            lines.append(f"- {z.name}  ({z.note_count} nota(s))  — '{z.name.lower()}'")
+        lines.append("\nUsa 'ver borradores', 'ver reportes' o 'ver heartbeats' para listar notas.")
+        return "\n".join(lines)
+
+    def _obsidian_list_agent_zone(self, *, zone_rel: str, zone_name: str) -> str:
+        """List notes inside a specific Agent sub-zone."""
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        try:
+            notes = list_notes_in_section(vault_root, zone_rel)
+        except Exception as exc:
+            return f"Error listando {zone_name}: {exc}"
+        if not notes:
+            return f"{zone_name} está vacío."
+        lines = [f"Notas en {zone_name} ({len(notes)}):"]
+        for n in notes[:20]:
+            lines.append(f"- {n}")
+        if len(notes) > 20:
+            lines.append(f"… y {len(notes) - 20} más.")
+        lines.append("\nUsa 'léeme <nombre>' para leer cualquiera.")
+        return "\n".join(lines)
+
     def _obsidian_list_section_notes(self, *, operator_id: str, folder_ref: str) -> str:
         """E2 — list notes in a vault section (fuzzy folder resolution)."""
         err = self._vault_read_check(operator_id)
@@ -2922,6 +3152,45 @@ class TelegramCommandProcessor:
         return assistant_responses.render_note_content(
             note.note_name, note.rel_path, note.content,
             truncated=note.truncated, total_lines=note.total_lines,
+        )
+
+    def _obsidian_draft_write(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        title: str,
+        body: str,
+        mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para escribir borradores."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        summary = f"draft.write | '{title}'"
+        params = {"title": title, "body": body}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="draft_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="draft_write",
+            action_id="action.draft.write.v1",
+            params=params,
+            reason="telegram_draft_write",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.draft_write",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.draft.write.v1",
+            params={"intent": "draft_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.draft.write.v1", mode=mode, intent="draft_write",
+            text=assistant_responses.render_draft_write_confirm(title, body),
         )
 
     def _obsidian_create_note(
@@ -3138,6 +3407,45 @@ class TelegramCommandProcessor:
             chat_id=chat_id, user_id=user_id, operator_id=operator_id,
             action_id="action.note.move.v1", mode=mode, intent="note_move",
             text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_heartbeat_write(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        heartbeat_type: str,
+        context: str,
+        mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para escribir heartbeats."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        params = {"heartbeat_type": heartbeat_type, "context": context, "result": "Heartbeat manual desde Telegram."}
+        summary = f"heartbeat.write | {heartbeat_type}"
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="heartbeat_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="heartbeat_write",
+            action_id="action.heartbeat.write.v1",
+            params=params,
+            reason="telegram_heartbeat_write",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.heartbeat_write",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.heartbeat.write.v1",
+            params={"intent": "heartbeat_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.heartbeat.write.v1", mode=mode, intent="heartbeat_write",
+            text=assistant_responses.render_heartbeat_confirm(heartbeat_type, context),
         )
 
     @staticmethod

@@ -531,3 +531,42 @@ def render_note_edited(note_name: str, rel_path: str, mode: str) -> str:
 
 def render_note_moved(note_name: str, from_path: str, to_path: str) -> str:
     return f"Nota movida.\nde: {from_path}\na:  {to_path}"
+
+
+def render_draft_written(draft_name: str, draft_rel: str, title: str) -> str:
+    return (
+        f"Borrador creado.\n"
+        f"título: {title}\n"
+        f"ruta: {draft_rel}\n"
+        "Estado: pending_human_review — revísalo en Obsidian antes de promoverlo."
+    )
+
+
+def render_draft_write_confirm(title: str, body: str) -> str:
+    preview = body[:100] + ("…" if len(body) > 100 else "")
+    return (
+        f"Voy a crear un borrador en Agent/Drafts_Agent.\n"
+        f"título: {title}\n"
+        f"contenido: {preview}\n"
+        "¿Confirmas? (sí/no)"
+    )
+
+
+def render_draft_write_conflict() -> str:
+    return (
+        "No puedo crear el borrador: ya existe un STAGED_INPUT.md pendiente.\n"
+        "Espera a que el pipeline lo procese o archívalo antes de continuar."
+    )
+
+
+def render_heartbeat_written(note_name: str, rel_path: str, heartbeat_type: str) -> str:
+    return f"Heartbeat registrado.\ntipo: {heartbeat_type}\nruta: {rel_path}"
+
+
+def render_heartbeat_confirm(heartbeat_type: str, context: str) -> str:
+    preview = context[:80] + ("…" if len(context) > 80 else "")
+    return (
+        f"Voy a escribir un heartbeat '{heartbeat_type}' en Agent/Heartbeat.\n"
+        f"Contexto: {preview}\n"
+        "¿Confirmas? (sí/no)"
+    )

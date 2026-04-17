@@ -623,6 +623,221 @@ class NoteMoveFolderAction(BaseAction):
         )
 
 
+class HeartbeatWriteAction(BaseAction):
+    """Write a create-only heartbeat note to Agent/Heartbeat/.
+
+    Connects openclaw bot with the heartbeat.write contract defined in
+    obsi-claw-AI_agent/scripts/helpers/openclaw_vault_heartbeat_writer.py.
+    """
+
+    action_id = "action.heartbeat.write.v1"
+    _HEARTBEAT_DIR = Path("Agent") / "Heartbeat"
+    _SLUG_RE = re.compile(r"[^\w\-]")
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "heartbeat_type": params.get("heartbeat_type", "runtime-status"),
+            "context_len": len(str(params.get("context", ""))),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+
+        heartbeat_type = str(params.get("heartbeat_type") or "runtime-status").strip()
+        context = self._require_string(params.get("context"), "context", max_len=2048)
+        result_text = str(params.get("result") or "Heartbeat manual desde Telegram.").strip()
+
+        root = Path(vault_root).resolve()
+        heartbeat_dir = (root / self._HEARTBEAT_DIR).resolve()
+        if not str(heartbeat_dir).startswith(str(root)):
+            raise ActionError("invalid_params", "heartbeat dir resolves outside vault")
+        if not heartbeat_dir.is_dir():
+            try:
+                heartbeat_dir.mkdir(parents=False, mode=0o750)
+            except Exception as exc:
+                raise ActionError("not_found", f"Agent/Heartbeat does not exist: {exc}") from exc
+
+        now = datetime.now(timezone.utc)
+        ts_file = now.strftime("%Y%m%dT%H%M%SZ")
+        ts_front = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        run_id = ts_file
+        filename = f"{ts_file}_{heartbeat_type}_{run_id}.md"
+        note_path = heartbeat_dir / filename
+        if note_path.exists():
+            raise ActionError("conflict", "heartbeat note already exists (timestamp collision)")
+
+        content = (
+            "---\n"
+            "managed_by: openclaw\n"
+            "agent_zone: Heartbeat\n"
+            f'run_id: "{run_id}"\n'
+            f'created_at_utc: "{ts_front}"\n'
+            f'updated_at_utc: "{ts_front}"\n'
+            "source_refs: []\n"
+            "human_review_status: not_required\n"
+            f'heartbeat_type: "{heartbeat_type}"\n'
+            "---\n\n"
+            f"# Heartbeat {heartbeat_type}\n\n"
+            "## Contexto\n\n"
+            f"{context.strip()}\n\n"
+            "## Resultado\n\n"
+            f"{result_text.strip()}\n\n"
+            "## Trazabilidad\n\n"
+            f"- operation: `heartbeat.write`\n"
+            f"- run_id: `{run_id}`\n"
+            f"- heartbeat_type: `{heartbeat_type}`\n"
+            f"- created_at_utc: `{ts_front}`\n"
+        )
+        try:
+            note_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise ActionError("io_error", f"failed to write heartbeat: {exc}") from exc
+
+        try:
+            rel_path = str(note_path.relative_to(root))
+        except ValueError:
+            rel_path = str(self._HEARTBEAT_DIR / filename)
+
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "note_name": filename,
+                "rel_path": rel_path,
+                "heartbeat_type": heartbeat_type,
+                "run_id": run_id,
+            },
+            audit_params=self.audit_params(params),
+        )
+
+
+class DraftWriteAction(BaseAction):
+    """Write a draft directly from Telegram content.
+
+    Follows the draft.write contract from obsi-claw-AI_agent ADR-003:
+    - Writes STAGED_INPUT.md to Agent/Inbox_Agent/ (create-only)
+    - Generates draft note in Agent/Drafts_Agent/
+    - human_review_status: pending_human_review
+    """
+
+    action_id = "action.draft.write.v1"
+    _INPUT_DIR = Path("Agent") / "Inbox_Agent"
+    _OUTPUT_DIR = Path("Agent") / "Drafts_Agent"
+    _STAGED_NAME = "STAGED_INPUT.md"
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": params.get("title"),
+            "body_bytes": len(str(params.get("body", "")).encode("utf-8")),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+
+        title = self._require_string(params.get("title"), "title", max_len=256)
+        body = self._require_string(params.get("body"), "body", max_len=self.policy.broker.max_write_bytes)
+
+        root = Path(vault_root).resolve()
+        input_dir = (root / self._INPUT_DIR).resolve()
+        output_dir = (root / self._OUTPUT_DIR).resolve()
+
+        if not input_dir.is_dir():
+            raise ActionError("not_found", "Agent/Inbox_Agent does not exist in vault")
+        if not output_dir.is_dir():
+            raise ActionError("not_found", "Agent/Drafts_Agent does not exist in vault")
+
+        staged_path = input_dir / self._STAGED_NAME
+        if staged_path.exists():
+            raise ActionError(
+                "conflict",
+                "STAGED_INPUT.md ya existe — hay un pipeline pendiente sin procesar. "
+                "Espera a que el agente lo procese o archívalo antes de escribir un nuevo borrador.",
+            )
+
+        now = datetime.now(timezone.utc)
+        ts_file = now.strftime("%Y%m%dT%H%M%SZ")
+        ts_front = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        run_id = ts_file
+
+        staged_content = (
+            "---\n"
+            "operation: draft.write\n"
+            "schema_version: 1\n"
+            f'run_id: "{run_id}"\n'
+            f'draft_title: "{title}"\n'
+            "source_refs: []\n"
+            'proposed_target_path: ""\n'
+            "---\n\n"
+            f"{body.strip()}\n"
+        )
+        try:
+            staged_path.write_text(staged_content, encoding="utf-8")
+        except OSError as exc:
+            raise ActionError("io_error", f"failed to write STAGED_INPUT.md: {exc}") from exc
+
+        draft_filename = f"{ts_file}_draft_{run_id}.md"
+        draft_path = output_dir / draft_filename
+        draft_content = (
+            "---\n"
+            "managed_by: openclaw\n"
+            "agent_zone: Drafts_Agent\n"
+            f'run_id: "{run_id}"\n'
+            f'created_at_utc: "{ts_front}"\n'
+            f'updated_at_utc: "{ts_front}"\n'
+            "source_refs: []\n"
+            "human_review_status: pending_human_review\n"
+            'proposed_target_path: ""\n'
+            "---\n\n"
+            f"# {title}\n\n"
+            "## Contexto\n\n"
+            "Borrador generado desde Telegram via draft.write directo.\n\n"
+            "## Entradas\n\n"
+            f"- input_staged_file: `Agent/Inbox_Agent/{self._STAGED_NAME}`\n\n"
+            "## Borrador\n\n"
+            f"{body.strip()}\n\n"
+            "## Estado HITL\n\n"
+            "- Estado actual: `pending_human_review`\n"
+            "- Acción humana esperada:\n"
+            "- Decisión tomada:\n\n"
+            "## Trazabilidad\n\n"
+            f"- operation: `draft.write`\n"
+            f"- run_id: `{run_id}`\n"
+            f"- created_at_utc: `{ts_front}`\n"
+        )
+        try:
+            draft_path.write_text(draft_content, encoding="utf-8")
+        except OSError as exc:
+            try:
+                staged_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise ActionError("io_error", f"failed to write draft: {exc}") from exc
+
+        try:
+            staged_rel = str(staged_path.relative_to(root))
+            draft_rel = str(draft_path.relative_to(root))
+        except ValueError:
+            staged_rel = f"Agent/Inbox_Agent/{self._STAGED_NAME}"
+            draft_rel = f"Agent/Drafts_Agent/{draft_filename}"
+
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "draft_name": draft_filename,
+                "draft_rel": draft_rel,
+                "staged_rel": staged_rel,
+                "run_id": run_id,
+                "title": title,
+            },
+            audit_params=self.audit_params(params),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -637,5 +852,7 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         NoteArchiveAction(policy),
         NoteEditAction(policy),
         NoteMoveFolderAction(policy),
+        HeartbeatWriteAction(policy),
+        DraftWriteAction(policy),
     ]
     return {action.action_id: action for action in actions}
