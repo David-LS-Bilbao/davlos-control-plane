@@ -2008,12 +2008,6 @@ class TelegramCommandProcessor:
         "ver zonas del agente",
         "borradores del agente",
         "reportes del agente",
-        "ver borradores",
-        "ver reportes",
-        "ver heartbeats",
-        "que borradores hay",
-        "que reportes hay",
-        "que heartbeats hay",
         "zonas agente",
     })
     _OBS_LIST_SECTION_PREFIXES: tuple[str, ...] = (
