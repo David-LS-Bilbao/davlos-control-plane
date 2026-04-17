@@ -692,6 +692,7 @@ class HeartbeatWriteAction(BaseAction):
         )
         try:
             note_path.write_text(content, encoding="utf-8")
+            note_path.chmod(0o660)
         except OSError as exc:
             raise ActionError("io_error", f"failed to write heartbeat: {exc}") from exc
 
@@ -776,6 +777,7 @@ class DraftWriteAction(BaseAction):
         )
         try:
             staged_path.write_text(staged_content, encoding="utf-8")
+            staged_path.chmod(0o660)
         except OSError as exc:
             raise ActionError("io_error", f"failed to write STAGED_INPUT.md: {exc}") from exc
 
@@ -810,6 +812,7 @@ class DraftWriteAction(BaseAction):
         )
         try:
             draft_path.write_text(draft_content, encoding="utf-8")
+            draft_path.chmod(0o660)
         except OSError as exc:
             try:
                 staged_path.unlink(missing_ok=True)
