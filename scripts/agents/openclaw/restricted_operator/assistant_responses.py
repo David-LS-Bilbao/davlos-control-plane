@@ -531,3 +531,16 @@ def render_note_edited(note_name: str, rel_path: str, mode: str) -> str:
 
 def render_note_moved(note_name: str, from_path: str, to_path: str) -> str:
     return f"Nota movida.\nde: {from_path}\na:  {to_path}"
+
+
+def render_heartbeat_written(note_name: str, rel_path: str, heartbeat_type: str) -> str:
+    return f"Heartbeat registrado.\ntipo: {heartbeat_type}\nruta: {rel_path}"
+
+
+def render_heartbeat_confirm(heartbeat_type: str, context: str) -> str:
+    preview = context[:80] + ("…" if len(context) > 80 else "")
+    return (
+        f"Voy a escribir un heartbeat '{heartbeat_type}' en Agent/Heartbeat.\n"
+        f"Contexto: {preview}\n"
+        "¿Confirmas? (sí/no)"
+    )

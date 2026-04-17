@@ -1004,6 +1004,31 @@ class TelegramCommandProcessor:
                     result.result.get("to_path", "?"),
                 )
             return f"Error moviendo nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "heartbeat_write":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.heartbeat.write.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.heartbeat_write",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok,
+                action_id="action.heartbeat.write.v1",
+                params={"heartbeat_type": pending.params.get("heartbeat_type")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_heartbeat_written(
+                    result.result.get("note_name", "?"),
+                    result.result.get("rel_path", "?"),
+                    result.result.get("heartbeat_type", "?"),
+                )
+            return f"Error escribiendo heartbeat.\ncode={result.code}\nerror={result.error}"
         else:
             return "Intención pendiente no soportada."
         self._audit_channel_event(
@@ -2021,6 +2046,15 @@ class TelegramCommandProcessor:
         "mover ",
         "traslada ",
     )
+    _OBS_HEARTBEAT_TRIGGERS: frozenset[str] = frozenset({
+        "escribe heartbeat",
+        "heartbeat",
+        "heartbeat runtime",
+        "registra estado",
+        "registra estado del sistema",
+        "anota estado",
+        "guarda estado del sistema",
+    })
 
     def _match_obsidian_intent(
         self, *, normalized: str, original_text: str
@@ -2112,6 +2146,28 @@ class TelegramCommandProcessor:
                                 "summary": f"Mover '{note_ref}' a {dest_folder}",
                                 "reason": "telegram_obsidian_move_note",
                             }
+
+        # --- Heartbeat write: registra estado del sistema en Agent/Heartbeat ---
+        if normalized in {t.replace(" ", "") if " " not in t else t for t in self._OBS_HEARTBEAT_TRIGGERS} \
+                or normalized in self._OBS_HEARTBEAT_TRIGGERS:
+            # Extract optional context after ":" separator
+            orig_lower_hb = original_text.lower().strip()
+            context = ""
+            for trigger in self._OBS_HEARTBEAT_TRIGGERS:
+                if orig_lower_hb.startswith(trigger) and ":" in original_text:
+                    idx = original_text.index(":")
+                    context = original_text[idx + 1:].strip()
+                    break
+            if not context:
+                context = "Heartbeat manual solicitado desde Telegram."
+            return {
+                "intent": "obsidian.heartbeat_write",
+                "action_id": "action.heartbeat.write.v1",
+                "params": {"heartbeat_type": "runtime-status", "context": context},
+                "mutation": "heartbeat_write",
+                "summary": f"heartbeat.write | Agent/Heartbeat",
+                "reason": "telegram_heartbeat_write",
+            }
 
         # --- Phase 8 E3: create note in any folder ---
         orig_lower = original_text.lower().strip()
@@ -2532,6 +2588,15 @@ class TelegramCommandProcessor:
                 chat_id=chat_id, user_id=user_id, operator_id=operator_id,
                 note_ref=resolved_ref,
                 dest_folder=intent["params"]["dest_folder"],
+                mode=mode,
+            )
+
+        # --- Heartbeat write ---
+        if sub == "obsidian.heartbeat_write":
+            return self._obsidian_heartbeat_write(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                heartbeat_type=intent["params"].get("heartbeat_type", "runtime-status"),
+                context=intent["params"].get("context", ""),
                 mode=mode,
             )
 
@@ -3138,6 +3203,45 @@ class TelegramCommandProcessor:
             chat_id=chat_id, user_id=user_id, operator_id=operator_id,
             action_id="action.note.move.v1", mode=mode, intent="note_move",
             text=f"Acción interpretada:\n{summary}\nResponde 'si' para ejecutar o 'no' para cancelar.",
+        )
+
+    def _obsidian_heartbeat_write(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        heartbeat_type: str,
+        context: str,
+        mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para escribir heartbeats."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        params = {"heartbeat_type": heartbeat_type, "context": context, "result": "Heartbeat manual desde Telegram."}
+        summary = f"heartbeat.write | {heartbeat_type}"
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="heartbeat_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="heartbeat_write",
+            action_id="action.heartbeat.write.v1",
+            params=params,
+            reason="telegram_heartbeat_write",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.heartbeat_write",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.heartbeat.write.v1",
+            params={"intent": "heartbeat_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.heartbeat.write.v1", mode=mode, intent="heartbeat_write",
+            text=assistant_responses.render_heartbeat_confirm(heartbeat_type, context),
         )
 
     @staticmethod

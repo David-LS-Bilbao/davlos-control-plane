@@ -9,8 +9,8 @@
     "max_write_bytes": 4096
   },
   "vault_inbox": {
-    "vault_root": "",
-    "_comment": "Set vault_root to the absolute path of the Obsidian vault before enabling action.inbox.write.v1"
+    "vault_root": "/opt/data/obsidian/vault-main",
+    "_comment": "Canonical vault path validated in obsi-claw-AI_agent Sprint 3"
   },
   "actions": {
     "action.health.general.v1": {
@@ -132,6 +132,16 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Mueve una nota a otra carpeta del vault (no destructivo)"
+    },
+    "action.heartbeat.write.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "heartbeat_write_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Escribe una nota create-only en Agent/Heartbeat (integración con obsi-claw-AI_agent heartbeat.write)"
     }
   },
   "operator_auth": {

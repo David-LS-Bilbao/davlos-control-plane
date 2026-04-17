@@ -623,6 +623,96 @@ class NoteMoveFolderAction(BaseAction):
         )
 
 
+class HeartbeatWriteAction(BaseAction):
+    """Write a create-only heartbeat note to Agent/Heartbeat/.
+
+    Connects openclaw bot with the heartbeat.write contract defined in
+    obsi-claw-AI_agent/scripts/helpers/openclaw_vault_heartbeat_writer.py.
+    """
+
+    action_id = "action.heartbeat.write.v1"
+    _HEARTBEAT_DIR = Path("Agent") / "Heartbeat"
+    _SLUG_RE = re.compile(r"[^\w\-]")
+
+    def audit_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "heartbeat_type": params.get("heartbeat_type", "runtime-status"),
+            "context_len": len(str(params.get("context", ""))),
+        }
+
+    def execute(self, params: dict[str, Any]) -> BrokerResult:
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            raise ActionError("not_configured", "vault_root is not configured in policy")
+
+        heartbeat_type = str(params.get("heartbeat_type") or "runtime-status").strip()
+        context = self._require_string(params.get("context"), "context", max_len=2048)
+        result_text = str(params.get("result") or "Heartbeat manual desde Telegram.").strip()
+
+        root = Path(vault_root).resolve()
+        heartbeat_dir = (root / self._HEARTBEAT_DIR).resolve()
+        if not str(heartbeat_dir).startswith(str(root)):
+            raise ActionError("invalid_params", "heartbeat dir resolves outside vault")
+        if not heartbeat_dir.is_dir():
+            try:
+                heartbeat_dir.mkdir(parents=False, mode=0o750)
+            except Exception as exc:
+                raise ActionError("not_found", f"Agent/Heartbeat does not exist: {exc}") from exc
+
+        now = datetime.now(timezone.utc)
+        ts_file = now.strftime("%Y%m%dT%H%M%SZ")
+        ts_front = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        run_id = ts_file
+        filename = f"{ts_file}_{heartbeat_type}_{run_id}.md"
+        note_path = heartbeat_dir / filename
+        if note_path.exists():
+            raise ActionError("conflict", "heartbeat note already exists (timestamp collision)")
+
+        content = (
+            "---\n"
+            "managed_by: openclaw\n"
+            "agent_zone: Heartbeat\n"
+            f'run_id: "{run_id}"\n'
+            f'created_at_utc: "{ts_front}"\n'
+            f'updated_at_utc: "{ts_front}"\n'
+            "source_refs: []\n"
+            "human_review_status: not_required\n"
+            f'heartbeat_type: "{heartbeat_type}"\n'
+            "---\n\n"
+            f"# Heartbeat {heartbeat_type}\n\n"
+            "## Contexto\n\n"
+            f"{context.strip()}\n\n"
+            "## Resultado\n\n"
+            f"{result_text.strip()}\n\n"
+            "## Trazabilidad\n\n"
+            f"- operation: `heartbeat.write`\n"
+            f"- run_id: `{run_id}`\n"
+            f"- heartbeat_type: `{heartbeat_type}`\n"
+            f"- created_at_utc: `{ts_front}`\n"
+        )
+        try:
+            note_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise ActionError("io_error", f"failed to write heartbeat: {exc}") from exc
+
+        try:
+            rel_path = str(note_path.relative_to(root))
+        except ValueError:
+            rel_path = str(self._HEARTBEAT_DIR / filename)
+
+        return BrokerResult(
+            ok=True,
+            action_id=self.action_id,
+            result={
+                "note_name": filename,
+                "rel_path": rel_path,
+                "heartbeat_type": heartbeat_type,
+                "run_id": run_id,
+            },
+            audit_params=self.audit_params(params),
+        )
+
+
 def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
     actions: list[BaseAction] = [
         HealthAction(policy),
@@ -637,5 +727,6 @@ def build_action_registry(policy: PolicyStore) -> dict[str, BaseAction]:
         NoteArchiveAction(policy),
         NoteEditAction(policy),
         NoteMoveFolderAction(policy),
+        HeartbeatWriteAction(policy),
     ]
     return {action.action_id: action for action in actions}
