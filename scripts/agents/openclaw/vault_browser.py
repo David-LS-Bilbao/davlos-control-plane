@@ -33,16 +33,23 @@ class VaultSection:
     note_count: int
 
 
-def _is_syncthing_root(path: Path) -> bool:
-    """Return True if directory is a Syncthing-managed root (contains .stfolder marker)."""
-    return (path / ".stfolder").exists()
+def _is_syncthing_managed(path: Path, vault_uid: int) -> bool:
+    """Return True if directory is managed by Syncthing (different owner than vault root)."""
+    try:
+        return path.stat().st_uid != vault_uid
+    except OSError:
+        return False
 
 
 def list_vault_sections(vault_root: str) -> list[VaultSection]:
-    """List top-level directories in the vault (excludes hidden, reserved, and Syncthing roots)."""
+    """List top-level directories in the vault (excludes hidden, reserved, and Syncthing-owned dirs)."""
     root = Path(vault_root)
     if not root.is_dir():
         return []
+    try:
+        vault_uid = root.stat().st_uid
+    except OSError:
+        vault_uid = -1
     sections = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -51,7 +58,7 @@ def list_vault_sections(vault_root: str) -> list[VaultSection]:
             continue
         if _HIDDEN_PATTERN.match(entry.name):
             continue
-        if _is_syncthing_root(entry):
+        if _is_syncthing_managed(entry, vault_uid):
             continue
         count = sum(1 for f in entry.rglob("*.md") if f.is_file() and f.name not in _PIPELINE_FILES)
         sections.append(VaultSection(name=entry.name, rel_path=entry.name, note_count=count))
