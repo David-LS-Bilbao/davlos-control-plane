@@ -1005,6 +1005,33 @@ class TelegramCommandProcessor:
                     result.result.get("to_path", "?"),
                 )
             return f"Error moviendo nota.\ncode={result.code}\nerror={result.error}"
+        elif pending.mutation == "draft_write":
+            result = self.broker.execute(
+                BrokerRequest(
+                    action_id="action.draft.write.v1",
+                    params=pending.params,
+                    actor=pending.operator_id,
+                )
+            )
+            self._audit_channel_event(
+                event="action_executed" if result.ok else "action_failed",
+                command="obsidian.draft_write",
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                ok=result.ok, action_id="action.draft.write.v1",
+                params={"title": pending.params.get("title")},
+                result=result.to_dict() if result.ok else None,
+                error=result.error, code=result.code,
+            )
+            if result.ok:
+                return assistant_responses.render_draft_written(
+                    result.result.get("draft_name", "?"),
+                    result.result.get("draft_rel", "?"),
+                    result.result.get("title", "?"),
+                )
+            if result.code == "conflict":
+                return assistant_responses.render_draft_write_conflict()
+            return f"Error escribiendo borrador.\ncode={result.code}\nerror={result.error}"
+
         elif pending.mutation == "heartbeat_write":
             result = self.broker.execute(
                 BrokerRequest(
@@ -2028,6 +2055,14 @@ class TelegramCommandProcessor:
         "abre la nota ",
         "lee ",
     )
+    _OBS_DRAFT_WRITE_PREFIXES: tuple[str, ...] = (
+        "escribe borrador: ",
+        "escribe un borrador: ",
+        "crea borrador: ",
+        "crea un borrador: ",
+        "nuevo borrador: ",
+        "borrador: ",
+    )
     _OBS_CREATE_NOTE_PREFIXES: tuple[str, ...] = (
         "crea una nota en ",
         "crea nota en ",
@@ -2198,6 +2233,31 @@ class TelegramCommandProcessor:
                 "summary": f"heartbeat.write | Agent/Heartbeat",
                 "reason": "telegram_heartbeat_write",
             }
+
+        # --- Draft write: escribe borrador directo a Agent/Drafts_Agent ---
+        # Format: "escribe borrador: <título> :: <cuerpo>"
+        orig_lower_dw = original_text.lower().strip()
+        for prefix in self._OBS_DRAFT_WRITE_PREFIXES:
+            if orig_lower_dw.startswith(prefix):
+                remainder = original_text[len(prefix):].strip()
+                if "::" in remainder:
+                    title, _, body = remainder.partition("::")
+                    title = title.strip()
+                    body = body.strip()
+                    if title and body:
+                        return {
+                            "intent": "obsidian.draft_write",
+                            "action_id": "action.draft.write.v1",
+                            "params": {"title": title, "body": body},
+                            "mutation": "draft_write",
+                            "summary": f"draft.write | '{title}'",
+                            "reason": "telegram_draft_write",
+                        }
+                return {
+                    "intent": "obsidian.draft_write_clarify",
+                    "action_id": "telegram.command",
+                    "params": {},
+                }
 
         # --- Phase 8 E3: create note in any folder ---
         orig_lower = original_text.lower().strip()
@@ -2577,6 +2637,28 @@ class TelegramCommandProcessor:
                 text=self._obsidian_read_content(
                     operator_id=operator_id, note_ref=resolved_ref,
                     chat_id=chat_id, user_id=user_id,
+                ),
+            )
+
+        # --- Draft write ---
+        if sub == "obsidian.draft_write":
+            return self._obsidian_draft_write(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                title=intent["params"]["title"],
+                body=intent["params"]["body"],
+                mode=mode,
+            )
+
+        if sub == "obsidian.draft_write_clarify":
+            return self._response(
+                chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+                action_id="telegram.command", mode=mode, intent=sub,
+                text=(
+                    "Formato para escribir un borrador:\n"
+                    "  escribe borrador: <título> :: <contenido>\n"
+                    "Ejemplo:\n"
+                    "  escribe borrador: Ideas para sprint 6 :: Aquí van los detalles del sprint\n"
+                    "El borrador se guarda en Agent/Drafts_Agent con estado pending_human_review."
                 ),
             )
 
@@ -3070,6 +3152,45 @@ class TelegramCommandProcessor:
         return assistant_responses.render_note_content(
             note.note_name, note.rel_path, note.content,
             truncated=note.truncated, total_lines=note.total_lines,
+        )
+
+    def _obsidian_draft_write(
+        self,
+        *,
+        chat_id: str,
+        user_id: str,
+        operator_id: str,
+        title: str,
+        body: str,
+        mode: str,
+    ) -> str:
+        if not self._can_operator(operator_id, "operator.write"):
+            return "Operador no autorizado para escribir borradores."
+        vault_root = self.policy.vault_inbox.vault_root
+        if not vault_root:
+            return assistant_responses.render_obsidian_vault_not_configured()
+        summary = f"draft.write | '{title}'"
+        params = {"title": title, "body": body}
+        pending_key = self._pending_key(chat_id=chat_id, user_id=user_id)
+        self.pending_confirmations[pending_key] = PendingConfirmation(
+            intent="draft_write",
+            operator_id=operator_id,
+            summary=summary,
+            mutation="draft_write",
+            action_id="action.draft.write.v1",
+            params=params,
+            reason="telegram_draft_write",
+        )
+        self._audit_channel_event(
+            event="confirmation_requested", command="obsidian.draft_write",
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            ok=True, action_id="action.draft.write.v1",
+            params={"intent": "draft_write", "summary": summary},
+        )
+        return self._response(
+            chat_id=chat_id, user_id=user_id, operator_id=operator_id,
+            action_id="action.draft.write.v1", mode=mode, intent="draft_write",
+            text=assistant_responses.render_draft_write_confirm(title, body),
         )
 
     def _obsidian_create_note(

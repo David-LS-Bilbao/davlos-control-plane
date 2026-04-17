@@ -142,6 +142,16 @@
       "updated_by": "repo",
       "permission": "operator.write",
       "description": "Escribe una nota create-only en Agent/Heartbeat (integración con obsi-claw-AI_agent heartbeat.write)"
+    },
+    "action.draft.write.v1": {
+      "enabled": false,
+      "mode": "restricted",
+      "expires_at": null,
+      "one_shot": false,
+      "reason": "draft_write_disabled_until_vault_root_configured",
+      "updated_by": "repo",
+      "permission": "operator.write",
+      "description": "Escribe STAGED_INPUT.md y genera borrador en Agent/Drafts_Agent (contrato ADR-003)"
     }
   },
   "operator_auth": {
