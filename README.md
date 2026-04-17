@@ -69,7 +69,8 @@ Checkpoint actual (2026-04-17) — **Fases 1-9 completas, rama `feat/phase8-vaul
 `action.health.general.v1`, `action.logs.read.v1`, `action.webhook.trigger.v1`,
 `action.openclaw.restart.v1`, `action.dropzone.write.v1`, `action.inbox.write.v1`,
 `action.draft.promote.v1`, `action.report.promote.v1`, `action.note.create.v1`,
-`action.note.archive.v1`, `action.note.edit.v1`, `action.note.move.v1`
+`action.note.archive.v1`, `action.note.edit.v1`, `action.note.move.v1`,
+`action.heartbeat.write.v1`, `action.draft.write.v1`
 
 ### Sandbox mode (Phase 9)
 
@@ -102,11 +103,19 @@ sudo systemctl restart openclaw-telegram-bot.service
 cd /opt/control-plane && python3 -m unittest discover -s tests/restricted_operator -p "test_*.py"
 ```
 
+### Integración obsi-claw-AI_agent
+
+- `vault_root` configurado en `/opt/data/obsidian/vault-main` (vault Obsidian vía Syncthing)
+- `action.heartbeat.write.v1` conectado con el contrato heartbeat de obsi-claw (Agent/Heartbeat/)
+- `action.draft.write.v1` implementa ADR-003: escribe `STAGED_INPUT.md` en Agent/Inbox_Agent/ y genera borrador en Agent/Drafts_Agent/ con estado `pending_human_review`
+- Agent sub-zones (Drafts_Agent, Reports_Agent, Heartbeat) navegables en modo lectura desde Telegram
+
 ### Límites vigentes
 
 - Sin UI web; operación principal por consola + Telegram
 - Hardening final de egress no declarado cerrado
-- `action.note.edit.v1` y `action.note.move.v1` requieren habilitarse en policy de producción
+- `action.note.edit.v1` y `action.note.move.v1` habilitados en policy pero requieren validación E2E
+- `action.inbox.write.v1`, `action.draft.promote.v1`, `action.report.promote.v1` requieren revisión humana (HITL) antes de promover
 
 ## Documentos clave
 
@@ -121,6 +130,11 @@ cd /opt/control-plane && python3 -m unittest discover -s tests/restricted_operat
 - `docs/features/telegram-obsiclaw/PHASE_7_AGENTIC_MODE.md`
 - `docs/features/telegram-obsiclaw/PHASE_8_VAULT_CRUD.md`
 - `docs/features/telegram-obsiclaw/PHASE_9_SANDBOX_MODE.md`
+
+### Instalación y uso
+
+- `docs/INSTALL.md` — guía de instalación paso a paso
+- `docs/USER_MANUAL.md` — manual de usuario del bot Telegram
 
 ### Infraestructura y seguridad
 
