@@ -71,15 +71,15 @@ Rutas operativas confirmadas actualmente:
   - publicación local validada: `127.0.0.1:5678`
   - red validada: `verity_network`
   - volumen Docker `root_n8n_data`
-- OpenClaw:
-  - `/opt/automation/agents/openclaw`
-  - `/etc/davlos/secrets/openclaw`
-  - red Docker `agents_net`
-  - bind host `127.0.0.1:18789`
-- inference-gateway:
+- OpenClaw (bot Telegram Python — **sin Docker desde Phase 7**):
+  - policy y audit: `/opt/automation/agents/openclaw/broker/`
+  - secretos: `/etc/davlos/secrets/openclaw`
+  - servicio: `openclaw-telegram-bot.service`
+  - vault LLM local: `qwen2.5:3b` vía Ollama en `http://127.0.0.1:11440/v1`
+- inference-gateway / Ollama:
   - `/opt/automation/inference-gateway`
   - unidad `systemd` `inference-gateway.service`
-  - endpoint local `127.0.0.1:11440`
+  - endpoint local `http://127.0.0.1:11440/v1/chat/completions`
 
 Conclusión de arquitectura actual:
 
@@ -98,7 +98,7 @@ Conclusión de arquitectura actual:
 - `compose-n8n-1` + `verity_network` + `root_n8n_data` -> runtime validado de `n8n` pendiente de trazabilidad completa sobre `compose` y `env`
 - `/opt/automation/n8n/local-files` -> bind mount operativo confirmado de `n8n`
 - volumen Docker `root_n8n_data` -> persistencia futura a definir para `/opt/automation/n8n`
-- `/opt/automation/agents/openclaw` -> runtime operativo de `OpenClaw`
+- `/opt/automation/agents/openclaw` -> runtime operativo de `OpenClaw` (policy + audit; bot directo en host vía systemd)
 - `/opt/automation/inference-gateway` -> boundary host-side para inferencia local
 - `/etc/davlos/secrets/openclaw` -> contrato host-side de secretos para agentes
 
