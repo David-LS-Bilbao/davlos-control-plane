@@ -11,6 +11,8 @@ from pathlib import Path
 # Directories excluded from public listing/creation (pipeline-reserved)
 _EXCLUDED_DIRS: frozenset[str] = frozenset({"Agent", ".obsidian", ".git"})
 _HIDDEN_PATTERN = re.compile(r"^\.")
+# Pipeline artifact files — excluded from note listings and search results
+_PIPELINE_FILES: frozenset[str] = frozenset({"STAGED_INPUT.md", "REPORT_INPUT.md"})
 
 MAX_CONTENT_LINES = 60
 
@@ -44,7 +46,7 @@ def list_vault_sections(vault_root: str) -> list[VaultSection]:
             continue
         if _HIDDEN_PATTERN.match(entry.name):
             continue
-        count = sum(1 for f in entry.rglob("*.md") if f.is_file())
+        count = sum(1 for f in entry.rglob("*.md") if f.is_file() and f.name not in _PIPELINE_FILES)
         sections.append(VaultSection(name=entry.name, rel_path=entry.name, note_count=count))
     return sections
 
@@ -75,7 +77,10 @@ def list_notes_in_section(vault_root: str, folder_rel: str) -> list[str]:
         return []
     if not target.is_dir():
         return []
-    return sorted(f.name for f in target.iterdir() if f.is_file() and f.suffix == ".md")
+    return sorted(
+        f.name for f in target.iterdir()
+        if f.is_file() and f.suffix == ".md" and f.name not in _PIPELINE_FILES
+    )
 
 
 def find_note_anywhere(vault_root: str, note_ref: str) -> list[tuple[str, Path]]:
@@ -160,12 +165,14 @@ def search_vault_broad(
     matches: list[tuple[str, str]] = []
     seen: set[str] = set()
     for md_file in sorted(root.rglob("*.md")):
-        # skip reserved dirs
+        # skip reserved dirs and pipeline artifacts
         try:
             parts = md_file.relative_to(root).parts
         except ValueError:
             continue
         if parts and parts[0] in _EXCLUDED_DIRS:
+            continue
+        if md_file.name in _PIPELINE_FILES:
             continue
         try:
             rel = str(md_file.relative_to(root))
